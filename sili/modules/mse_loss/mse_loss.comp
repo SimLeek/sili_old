@@ -1,0 +1,43 @@
+#version 450
+
+layout (local_size_x_id = 0) in;
+
+layout(set = 0, binding = 0) buffer Predicted {
+    float predicted[];
+};
+
+layout(set = 0, binding = 1) buffer Actual {
+    float actual[];
+};
+
+layout(set = 0, binding = 2) buffer Loss {
+    float mse_loss[];
+};
+
+shared float shared_loss[gl_WorkGroupSize.x]; // I think this should be shared_loss[shared_memory_size]
+
+layout(constant_id=1) const uint conv_num = 1;  // divide loss by conv resolution so we don't have more loss with larger input
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    uint local_index = gl_LocalInvocationID.x;
+
+    float diff = predicted[index] - actual[index];
+    shared_loss[local_index] = diff * diff;
+
+    // Synchronize threads within workgroup
+    barrier();
+
+    // Perform reduction to calculate total MSE loss within workgroup
+    for (uint stride = gl_WorkGroupSize.x / 2; stride > 0; stride /= 2) {
+        if (local_index < stride) {
+            shared_loss[local_index] += shared_loss[local_index + stride];
+        }
+        barrier();
+    }
+
+    // Write total MSE loss to global memory for each workgroup
+    if (local_index == 0) {
+        mse_loss[gl_WorkGroupID.x] = shared_loss[0]/conv_num;
+    }
+}

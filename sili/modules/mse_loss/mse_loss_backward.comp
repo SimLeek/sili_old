@@ -1,0 +1,34 @@
+#version 450
+
+layout(set = 0, binding = 0) buffer Predicted {
+    float predicted[];
+};
+
+layout(set = 0, binding = 1) buffer Actual {
+    float actual[];
+};
+
+layout(set = 0, binding = 2) buffer ErrorGradient {
+    float error_gradient[];
+};
+
+/*layout(set = 0, binding = 3) buffer Loss {
+    float mse_loss[];
+};*/
+
+layout (local_size_x_id = 0) in;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+
+    // Compute the derivative of the MSE loss with respect to the predicted value
+    float d_loss_d_predicted = 2.0 * (predicted[index] - actual[index]);
+
+    // Compute the error gradient using the derivative and chain rule
+    error_gradient[index] = d_loss_d_predicted;
+
+    // Optionally clamp or normalize the error gradient here if needed
+
+    // Synchronize threads to ensure all data is written
+    barrier();
+}

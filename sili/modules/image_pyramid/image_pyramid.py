@@ -52,9 +52,12 @@ class ToImagePyramid(object):
         self.basic_sequence = None  # mostly for debugging
 
     def forward_ops(self):
-        return[
+        return [
             kp.OpAlgoDispatch(self.forward_algorithm)
         ]
+
+    def backward_ops(self):
+        return []
 
     def basic_forward(self, image):
         # todo: make this a superclass method
@@ -79,17 +82,26 @@ class ToImagePyramid(object):
                 break
 
 
+class ToImagePyramidReverse(ToImagePyramid):
+
+    def forward_ops(self):
+        return []
+
+    def backward_ops(self):
+        return super(self).forward_ops()
+
 
 if __name__ == '__main__':
     gpu = GPUManager()
     im = cv2.imread("../../../test/files/test_ai_pls_ignore.png").astype(np.float32) / 255
     pyr = ToImagePyramid(gpu, im)
-    #pyr.display_basic_forward_sequence(im)
+    # pyr.display_basic_forward_sequence(im)
 
     import pickle
+
     im_pyr = pyr.basic_forward(im)
     with open("../../../test/files/test_ai_pyr_pls_ignore.pyr", mode='wb') as f:
         pickle.dump(im_pyr, f)
-    #with open("test_files/test_ai_pyr_pls_ignore.pyr", mode='rb') as f:
+    # with open("test_files/test_ai_pyr_pls_ignore.pyr", mode='rb') as f:
     #    im_pyr = pickle.load(f)
     #    print(im_pyr)
