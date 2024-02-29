@@ -1,0 +1,113 @@
+#version 430
+
+//layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+//layout (local_size_x_id = 0, local_size_x_id=1, local_size_x_id=2) in;
+layout (local_size_x_id = 0) in;
+struct PyramidLevel {
+    int startIdx;
+    int width;
+    int height;
+};
+
+layout(std430, binding = 0) buffer InputBuffer {
+    float inputImage[];
+};
+
+layout(std430, binding = 1) buffer PyramidData {
+    int channels;
+    int levels;
+    PyramidLevel pyramidLevels[];
+};
+
+layout(std430, binding = 2) buffer OutputBuffer {
+    float outputPyramid[];
+};
+
+//divide each pyramid so adding results in normal image
+layout(constant_id = 1) const float pyr_div = 1.0;
+//scale div?
+
+float bilinearInterpolation(float x, float y, float bottomLeft, float bottomRight, float topLeft, float topRight) {
+    float left = mix(topLeft, bottomLeft, y);
+    float right = mix(topRight, bottomRight, y);
+    return mix(left, right, x);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    int levelWidth =-1;
+    int levelHeight =-1;
+    int inputWidth = pyramidLevels[0].width;
+    int inputHeight = pyramidLevels[0].height;
+    for(int level=0;level<levels;level++){
+        levelWidth = pyramidLevels[level].width;
+        levelHeight = pyramidLevels[level].height;
+
+        // Barrier synchronization
+        //memoryBarrierBuffer();
+        //memoryBarrierShared();
+        //barrier();
+
+        // Compute output coordinates
+        int y_current = int((gl_GlobalInvocationID.x / channels) % levelHeight);
+        int x_current = int((gl_GlobalInvocationID.x/ channels) / levelHeight);
+        int c_current = int(int(gl_GlobalInvocationID.x) % channels);
+        int outputIndex = pyramidLevels[level].startIdx*channels + x_current * levelHeight * channels + y_current * channels + c_current;
+
+        // If not the first level, use bilinear sampling with previously generated level as input
+        if (level > 0) {
+            if(x_current<levelWidth && y_current<levelHeight) {
+                // Compute input coordinates
+
+                // the same SSBO cant be both written to and read from... unless from the same workgroup
+                // this allows the large pyramid levels to generate quickly,
+                // while the smaller levels are much more accurate instead of based off of just 4 points
+                // I.E., you can't put goggles on the AI and make it think it's night time.
+                if(levelWidth*levelHeight*3<gl_WorkGroupSize.x) {
+                    float inputX = float(x_current) * float(pyramidLevels[level-1].width) / float(levelWidth);
+                    float inputY = float(y_current) * float(pyramidLevels[level-1].height) / float(levelHeight);
+
+                    // Find the four neighboring pixels for bilinear interpolation
+                    int topLeftIdx = pyramidLevels[level-1].startIdx * channels + int(floor(inputX) * pyramidLevels[level-1].height * channels + floor(inputY) * channels + c_current);
+                    int topRightIdx = topLeftIdx + pyramidLevels[level-1].height * channels;
+                    int bottomLeftIdx = topLeftIdx + channels;
+                    int bottomRightIdx = topRightIdx + channels;
+
+                    // Perform bilinear interpolation
+                    float topLeft = outputPyramid[topLeftIdx];
+                    float topRight = outputPyramid[topRightIdx];
+                    float bottomLeft = outputPyramid[bottomLeftIdx];
+                    float bottomRight = outputPyramid[bottomRightIdx];
+
+                    outputPyramid[outputIndex] = bilinearInterpolation(fract(inputX), fract(inputY), bottomLeft, bottomRight, topLeft, topRight)/pyr_div;
+                } else{
+                    float inputX = float(x_current) * float(pyramidLevels[0].width) / float(levelWidth);
+                    float inputY = float(y_current) * float(pyramidLevels[0].height) / float(levelHeight);
+
+                    // Find the four neighboring pixels for bilinear interpolation
+                    int topLeftIdx = pyramidLevels[0].startIdx * channels + int(floor(inputX) * pyramidLevels[0].height * channels + floor(inputY) * channels + c_current);
+                    int topRightIdx = topLeftIdx + pyramidLevels[0].height * channels;
+                    int bottomLeftIdx = topLeftIdx + channels;
+                    int bottomRightIdx = topRightIdx + channels;
+
+                    // Perform bilinear interpolation
+                    float topLeft = inputImage[topLeftIdx];
+                    float topRight = inputImage[topRightIdx];
+                    float bottomLeft = inputImage[bottomLeftIdx];
+                    float bottomRight = inputImage[bottomRightIdx];
+
+                    outputPyramid[outputIndex] = bilinearInterpolation(fract(inputX), fract(inputY), bottomLeft, bottomRight, topLeft, topRight)/pyr_div;
+                }
+
+            }
+        } else {
+            // If first level, directly copy pixel from input image
+            // Compute input coordinates
+            //int inputX = int(float(x_current) * float(inputWidth) / float(levelWidth));
+            //int inputY = int(float(y_current) * float(inputHeight) / float(levelHeight));
+            //int inputIndex = inputY * inputWidth + inputX;
+            // we're setting global size to input image size, so just copy directly.
+            outputPyramid[idx]=inputImage[idx]/pyr_div;
+        }
+    }
+}

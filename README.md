@@ -1,0 +1,2 @@
+# SILi
+Sparse Intelligence Library
