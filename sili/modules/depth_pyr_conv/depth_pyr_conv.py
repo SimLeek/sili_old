@@ -77,6 +77,10 @@ class DepthPyrConv(object):
             spec_consts=np.asarray([self.gpu.max_workgroup_invocations], dtype=np.uint32).view(np.float32)
         )
 
+        self.has_forward = True
+        self.has_backward = False
+        self.has_optim = False
+
         # BACKWARD:
         self.out_pyr_err = ImagePyramidBuffer(gpu, self.in_img_pyr.levels, use_lvl_buf=False)
 
@@ -87,8 +91,9 @@ class DepthPyrConv(object):
         self.backprop_input = False
         self.backprop_conv = False
         if backprop_input_buf is not None:
+            self.has_backward = True
             self.backprop_input = True
-            shad_input_back = get_shader('../src/gpu/depth_pyr_conv/depth_pyr_backward_input.comp')
+            shad_input_back = get_shader(file_path + os.sep + 'depth_pyr_backward_input.comp')
 
             self.backward_input_buffers = [self.out_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.depth_conv.buffer, self.out_pyr_err]
             self.backward_output_buffers = [backprop_input_buf]
@@ -101,11 +106,12 @@ class DepthPyrConv(object):
             )
 
         if backprop_conv:
+            self.has_backward = True
             self.backprop_conv = True
-            shad_conv_back_prepool_1 = get_shader('../src/gpu/depth_pyr_conv/depth_pyr_backward_conv_prepool.comp')
-            shad_conv_back_prepool_2 = get_shader('../src/gpu/reduction/index2_value2_max_reduction.comp')
-            shad_conv_back = get_shader('../src/gpu/depth_pyr_conv/depth_pyr_backward_conv.comp')
-            shad_conv_reduce = get_shader('../src/gpu/reduction/conv_err_sum_reduce.comp')
+            shad_conv_back_prepool_1 = get_shader(file_path + os.sep + 'depth_pyr_backward_conv_prepool.comp')
+            shad_conv_back_prepool_2 = get_shader(file_path + os.sep + 'index2_value2_max_reduction.comp')
+            shad_conv_back = get_shader(file_path + os.sep + 'depth_pyr_backward_conv.comp')
+            shad_conv_reduce = get_shader(file_path + os.sep + 'conv_err_sum_reduce.comp')
 
             # private buffers
             buf_conv_prepool = self.gpu.manager.tensor(np.zeros([int(np.ceil(self.in_img_pyr.size * 4 / self.gpu.max_workgroup_invocations))]))
@@ -180,19 +186,22 @@ class DepthPyrConv(object):
 
     def forward_ops(self):
         return[
-            self.forward_algorithm
+            kp.OpAlgoDispatch(self.forward_algorithm)
         ]
 
     def backward_ops(self):
         ops = []
         if self.backprop_input:
-            ops.append(self.algorithm_input_back)
+            ops.append(kp.OpAlgoDispatch(self.algorithm_input_back))
         if self.backprop_conv:
-            ops.append(self.algorithm_conv_prepool_1)
-            ops.extend(self.conv_prepool_reductions)
-            ops.append(self.algorithm_conv_back)
-            ops.extend(self.conv_err_reductions)
+            ops.append(kp.OpAlgoDispatch(self.algorithm_conv_prepool_1))
+            ops.extend(kp.OpAlgoDispatch(pr) for pr in self.conv_prepool_reductions)
+            ops.append(kp.OpAlgoDispatch(self.algorithm_conv_back))
+            ops.extend(kp.OpAlgoDispatch(ce) for ce in self.conv_err_reductions)
         return ops
+
+    def optim_ops(self):
+        return []
 
     def optim_buffs(self):
         # note: it's fine that depth_conv_err is larger than depth conv.
@@ -206,7 +215,7 @@ class DepthPyrConv(object):
             self.basic_sequence = self.gpu.manager.sequence()
             self.basic_sequence.record(kp.OpTensorSyncDevice([*self.forward_input_buffers]))
             for f in self.forward_ops():
-                self.basic_sequence.record(kp.OpAlgoDispatch(f))
+                self.basic_sequence.record(f)
             self.basic_sequence.record(kp.OpTensorSyncLocal([*self.forward_output_buffers]))
         self.basic_sequence.eval()
         return self.out_pyr

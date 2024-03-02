@@ -1,0 +1,34 @@
+#version 450
+
+layout(set = 0, binding = 0) buffer Loss {
+    float reduction_io[];
+};
+
+layout (local_size_x_id = 0) in;
+
+shared float shared_loss[gl_WorkGroupSize.x]; // I think this should be shared_loss[shared_memory_size]
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    uint local_index = gl_LocalInvocationID.x;
+
+    shared_loss[local_index] = reduction_io[index];
+
+    // Synchronize threads within workgroup
+    barrier();
+
+    // Perform reduction to calculate total MSE loss within workgroup
+    for (uint stride = gl_WorkGroupSize.x / 2; stride > 0; stride /= 2) {
+        if (local_index < stride) {
+            shared_loss[local_index] += shared_loss[local_index + stride];
+        }
+        barrier();
+    }
+
+    // Write total MSE loss to global memory for each workgroup
+    if (local_index == 0) {
+        reduction_io[gl_WorkGroupID.x] = shared_loss[0];
+    }
+
+    //barrier(); // barrier so next stage has correct memory
+}

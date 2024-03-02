@@ -1,0 +1,70 @@
+#version 450
+
+// adapted from: https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
+
+//AMD and NVidia wavefront sizes are now both 32, though AMD can have size 64
+#define WARP_REDUCE(shared_array, id) do{ \
+    if(gl_WorkGroupSize.x>=64) shared_array[id] += shared_array[id+32]; \
+    if(gl_WorkGroupSize.x>=32) shared_array[id] += shared_array[id+16]; \
+    if(gl_WorkGroupSize.x>=16) shared_array[id] += shared_array[id+8]; \
+    if(gl_WorkGroupSize.x>=8) shared_array[id] += shared_array[id+4]; \
+    if(gl_WorkGroupSize.x>=4) shared_array[id] += shared_array[id+2]; \
+    if(gl_WorkGroupSize.x>=2) shared_array[id] += shared_array[id+1]; \
+} while(false)
+
+layout(set = 0, binding = 0) buffer Loss {
+    float reduction_io[];
+};
+
+layout (local_size_x_id = 0) in;
+layout(constant_id = 1) const uint full_size = 1024;  //should be equal to levels
+
+shared float shared_loss[int(gl_WorkGroupSize.x*2)]; // I think this should be shared_loss[shared_memory_size]
+
+
+void main() {
+    uint index = gl_WorkGroupSize.x*2*gl_WorkGroupID.x+gl_LocalInvocationID.x;
+    uint local_index = gl_LocalInvocationID.x;
+    uint gridSize = gl_WorkGroupSize.x*2*gl_NumWorkGroups.x;
+    shared_loss[local_index] = 2.0;
+
+    while(index<full_size){
+        shared_loss[local_index] += reduction_io[index] + reduction_io[index+gl_WorkGroupSize.x];
+    }
+    // Synchronize threads within workgroup
+    barrier();
+
+    if (gl_WorkGroupSize.x >= 1024){
+        if(local_index<512){
+            shared_loss[local_index] += shared_loss[local_index+512];
+        }
+        barrier();
+    }
+    if (gl_WorkGroupSize.x >= 512){
+        if(local_index<256){
+            shared_loss[local_index] += shared_loss[local_index+256];
+        }
+        barrier();
+    }
+    if (gl_WorkGroupSize.x >= 256){
+        if(local_index<128){
+            shared_loss[local_index] += shared_loss[local_index+128];
+        }
+        barrier();
+    }
+    if (gl_WorkGroupSize.x >= 128){
+        if(local_index<64){
+            shared_loss[local_index] += shared_loss[local_index+64];
+        }
+        barrier();
+    }
+
+    if(local_index<32){
+        WARP_REDUCE(shared_loss, local_index);
+    }
+
+    // Write total to global memory for each workgroup
+    if (local_index == 0) {
+        reduction_io[gl_WorkGroupID.x] = shared_loss[0];
+    }
+}

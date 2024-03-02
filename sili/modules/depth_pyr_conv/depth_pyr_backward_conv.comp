@@ -1,0 +1,76 @@
+#version 450
+
+layout (local_size_x_id = 0) in;
+
+struct IndexValue {
+    int in_level;
+    int out_level;
+    float err_grad;  // used for changing value of connection
+    float out_grad;  // used for changing strength of connection for some optim algorithms
+};
+
+layout(std430, binding = 0) buffer OutputBuffer {
+    IndexValue max_f[];
+};
+
+layout(std430, binding = 1) buffer ConvErrBuffer {
+    float conv_err[];
+};
+
+layout(std430, binding = 2) buffer ConvContribBuffer {
+    float conv_contrib[];
+};
+
+layout(constant_id = 1) const uint c_levels = 10;  //should be equal to levels
+layout(constant_id = 2) const uint max_idx = 9999;  //fix for oob
+
+//both important. Example: you contributed 40%, 30% was wrong, you should get 10% then.
+// Or, you contributed 30%, 40% was wrong, now it's -10%.
+// This lets us ignore weights that give bad or random output
+//However, depending on the size of these arrays, this kernel may have to be split into 2
+shared float shared_egrad[c_levels*c_levels*gl_WorkGroupSize.x];
+shared float shared_ograd[c_levels*c_levels*gl_WorkGroupSize.x];
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint local_index = gl_LocalInvocationID.x;
+
+    // need to start with a zero'd array since we're adding
+    for (int i = 0; i < c_levels*c_levels; i++) {
+        shared_egrad[c_levels*c_levels*local_index + i] = 0.0;
+        shared_ograd[c_levels*c_levels*local_index + i] = 0.0;
+    }
+
+    int in_l;
+    int out_l;
+    float e;
+    float o;
+    if(idx<max_idx) {
+        in_l = max_f[idx].in_level;
+        out_l = max_f[idx].out_level;
+        e = max_f[idx].err_grad;
+        o = max_f[idx].out_grad;
+        shared_egrad[c_levels*c_levels*local_index + in_l*c_levels+out_l] = e;
+        shared_ograd[c_levels*c_levels*local_index + in_l*c_levels+out_l] = o;
+    }
+
+    barrier();
+
+    // Perform reduction to calculate total kernel val within workgroup
+    for (uint stride = (gl_WorkGroupSize.x) / 2; stride > 0; stride /= 2) {
+        if (local_index < stride) {
+            for (int c = 0;c < c_levels * c_levels; c++) {
+                shared_egrad[c_levels * c_levels * local_index + c] += shared_egrad[c_levels * c_levels * (local_index+stride) + c];
+                shared_ograd[c_levels * c_levels * local_index + c] += shared_ograd[c_levels * c_levels * (local_index+stride) + c];
+            }
+        }
+        barrier();
+    }
+
+    if (local_index == 0) {
+        for (int c = 0;c < c_levels * c_levels; c++) {
+            conv_err[c_levels * c_levels*gl_WorkGroupID.x+c] = shared_egrad[c];
+            conv_contrib[c_levels * c_levels*gl_WorkGroupID.x+c] = shared_ograd[c];
+        }
+    }
+}

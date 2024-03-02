@@ -16,6 +16,7 @@ class MSELoss(object):
                  gpu: GPUManager,
                  prediction_buffer: kp.Tensor,
                  actual_buffer: kp.Tensor,
+                 error_buffer: kp.Tensor,
                  forward=False,
                  backprop=True
                  ):
@@ -38,11 +39,16 @@ class MSELoss(object):
         else:
             self.act_buff = actual_buffer
 
+        if not isinstance(error_buffer, kp.Tensor):
+            raise TypeError("Error Buffer must be a buffer attached to a device")
+        else:
+            self.err_buff = error_buffer
+
         self.has_forward = forward
         if forward:
             self.forward_shader = get_shader(file_path + os.sep + 'mse_loss.comp')
 
-            self.err_buff = gpu.buffer(np.zeros_like(self.act_buff.data()))
+            #self.err_buff = gpu.buffer(np.zeros_like(self.act_buff.data()))
 
             # PIPELINE OBJECTS:
             # FORWARD
@@ -62,7 +68,7 @@ class MSELoss(object):
                 spec_consts=np.asarray([self.gpu.max_workgroup_invocations], dtype=np.uint32).view(np.float32)
             )
 
-        self.has_backprop = backprop
+        self.has_backward = backprop
         if backprop:
             self.backward_shader = get_shader(file_path + os.sep + 'mse_loss_backward.comp')
 
@@ -78,23 +84,27 @@ class MSELoss(object):
                 spec_consts=np.asarray([self.gpu.max_workgroup_invocations], dtype=np.uint32).view(np.float32)
             )
 
+        self.has_optim = False
         self.basic_sequence = None  # mostly for debugging
 
     def forward_ops(self):
         if self.has_forward:
             return [
-                self.forward_algorithm
+                kp.OpAlgoDispatch(self.forward_algorithm)
             ]
         else:
             return []
 
     def backward_ops(self):
-        if self.has_backprop:
+        if self.has_backward:
             return [
-                self.backward_algorithm
+                kp.OpAlgoDispatch(self.backward_algorithm)
             ]
         else:
             return []
+
+    def optim_ops(self):
+        return []
 
     def optim_buffs(self):
         # Doesn't make sense to optimize this. It isn't a neural net.

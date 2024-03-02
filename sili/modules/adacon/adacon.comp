@@ -1,0 +1,51 @@
+#version 450
+
+layout (local_size_x_id = 0) in;
+
+
+layout(std430, binding = 0) buffer weight_array {
+    float weights[];
+};
+
+layout(std430, binding = 1) buffer grad_array {
+    float weight_grads[];
+};
+
+layout(std430, binding = 2) buffer contrib_array {
+    float weight_contribs[];
+};
+
+layout(std430, binding = 3) buffer con_array {
+    float weight_cons[];
+};
+
+layout(constant_id = 1) const float epsilon = 0.1;
+// these four values might all need parameter tuning by a neural net:
+layout(constant_id = 2) const float lr = 1e-3;
+layout(constant_id = 3) const float decay = 10.0;
+layout(constant_id = 4) const float grad_mul = 1.0;
+layout(constant_id = 5) const float contrib_mul = 1.0;
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+
+    // Update weight connection strength based on output contribution and error contribution
+    // high output OR error contribution in one direction means the output and input have high mutual information
+    // which means the weight is useful.
+    // If the output & error contribution are either both zero or cancel each other out, it means no mutual information
+    // that means the neuron either never fires or only contributes noise. Both of which are useless.
+    // If the connection is useless, we should be able to do whatever we want. If it's useful, it should be preserved.
+    // Adagrad, on the other hand, stops weights from changing if they've had more error over time,
+    // even if those weights are useless and just noisy from an information theoretic view
+    // todo: see performance of multiplying weight_grads by a "decay" value, since that would disconnect more useless weights.
+    weight_cons[idx] = weight_cons[idx] + contrib_mul*weight_contribs[idx] - grad_mul*weight_grads[idx] - decay*sign(weight_cons[idx]);
+    //todo: try replease with += weight_grads since contribs can be hard or impossible to calculate
+
+
+    // This is the usual adagrad forumula with the G diagonal matrix replaced with weight connection strength
+    weights[idx] -= (lr / (abs(weight_cons[idx]) + epsilon)) * weight_grads[idx];
+
+    // clear grads&contribs here to make sure they don't acumulate.
+    weight_grads[idx] = 0;
+    weight_contribs[idx] = 0;
+}

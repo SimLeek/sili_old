@@ -1,0 +1,74 @@
+#version 450
+
+layout (local_size_x_id = 0) in;
+
+layout(constant_id = 1) const uint max_idx = 9999;  //fix for oob
+layout(constant_id = 2) const uint levels = 10;
+layout(constant_id = 3) const float epsilon = 0.1;
+
+struct IndexValue {
+    int in_level;
+    int out_level;
+    float err_grad;  // used for changing value of connection
+    float out_grad;  // used for changing strength of connection for some optim algorithms
+};
+
+layout(std430, binding = 0) buffer OutputBuffer {
+    IndexValue out_f[];
+};
+
+
+layout(std430, binding = 1) buffer con_array {
+    float weight_cons[];
+};
+
+shared float shared_errgs[gl_WorkGroupSize.x];
+shared float shared_outgs[gl_WorkGroupSize.x];
+shared int shared_in_lvls[gl_WorkGroupSize.x];
+shared int shared_out_lvls[gl_WorkGroupSize.x];
+
+void main() {
+    uint globalIndex = gl_GlobalInvocationID.x;
+    uint local_index = gl_LocalInvocationID.x;
+
+    if(globalIndex<max_idx) {
+        shared_in_lvls[local_index] = out_f[globalIndex].in_level;
+        shared_out_lvls[local_index] = out_f[globalIndex].out_level;
+        shared_errgs[local_index] = out_f[globalIndex].err_grad;
+        shared_outgs[local_index] = out_f[globalIndex].out_grad;
+    }
+    else{
+        shared_in_lvls[local_index] = 0;
+        shared_out_lvls[local_index] = 0;
+        shared_errgs[local_index] = 0;
+        shared_outgs[local_index] = 0;
+    }
+
+    barrier();
+
+    // max reduction
+    for (uint stride = gl_WorkGroupSize.x / 2; stride > 0; stride /= 2) {
+        if (local_index < stride) {
+            uint other_index = local_index + stride;
+            if( // history of competence matters: would you fire an executive that just messed up or an intern that messed up in the first minute? The answer should be obvious.
+            abs(shared_errgs[other_index])/(abs(weight_cons[shared_in_lvls[other_index]*levels + shared_out_lvls[other_index]])+epsilon)
+            >
+            abs(shared_errgs[local_index])/(abs(weight_cons[shared_in_lvls[local_index]*levels + shared_out_lvls[local_index]])+epsilon)
+            ) {
+                shared_errgs[local_index] = shared_errgs[other_index];
+                shared_outgs[local_index] = shared_outgs[other_index];
+                shared_in_lvls[local_index] = shared_in_lvls[other_index];
+                shared_out_lvls[local_index] = shared_out_lvls[other_index];
+            }
+        }
+        barrier();
+    }
+
+    // Write reduction to global memory for each workgroup
+     if (local_index == 0) {
+        out_f[gl_WorkGroupID.x].in_level = shared_in_lvls[0];
+        out_f[gl_WorkGroupID.x].out_level = shared_out_lvls[0];
+        out_f[gl_WorkGroupID.x].err_grad = shared_errgs[0];
+        out_f[gl_WorkGroupID.x].out_grad = shared_outgs[0];
+    }
+}

@@ -1,0 +1,55 @@
+#version 450
+
+layout (local_size_x_id = 0) in;
+
+layout(std430, binding = 0) buffer ConvErrBuffer {
+    float conv_err[];
+};
+
+layout(std430, binding = 1) buffer ConvContribBuffer {
+    float conv_contrib[];
+};
+
+layout(constant_id = 1) const uint c_levels = 10;  //should be equal to levels
+layout(constant_id = 2) const uint max_idx = 9999;  //fix for oob
+
+shared float shared_egrad[c_levels*c_levels*gl_WorkGroupSize.x];
+shared float shared_ograd[c_levels*c_levels*gl_WorkGroupSize.x];
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint local_index = gl_LocalInvocationID.x;
+
+    for (int i = 0; i < c_levels*c_levels; i++) {
+        if(idx<max_idx) {
+            shared_egrad[c_levels * c_levels * local_index + i] = conv_err[c_levels * c_levels * idx + i];
+            shared_ograd[c_levels * c_levels * local_index + i] = conv_contrib[c_levels * c_levels * idx + i];
+        }
+        else{
+            shared_egrad[c_levels * c_levels * local_index + i] = 0.0;
+            shared_ograd[c_levels * c_levels * local_index + i] = 0.0;
+        }
+    }
+
+    // Synchronize threads within workgroup
+    barrier();
+
+    // Perform reduction to calculate total kernel val within workgroup
+    for (uint stride = (gl_WorkGroupSize.x) / 2; stride > 0; stride /= 2) {
+        if (local_index < stride) {
+            for (int c = 0;c < c_levels * c_levels; c++) {
+                shared_egrad[c_levels * c_levels * local_index + c] += shared_egrad[c_levels * c_levels * (local_index+stride) + c];
+                shared_ograd[c_levels * c_levels * local_index + c] += shared_ograd[c_levels * c_levels * (local_index+stride) + c];
+            }
+        }
+        barrier();
+    }
+
+    // out of bounds, need bigger array for reduction
+    if (local_index == 0) {
+        for (int c = 0;c < c_levels * c_levels; c++) {
+            conv_err[c_levels * c_levels * gl_WorkGroupID.x + c] = shared_egrad[c];
+            conv_contrib[c_levels * c_levels * gl_WorkGroupID.x + c] = shared_ograd[c];
+        }
+    }
+}

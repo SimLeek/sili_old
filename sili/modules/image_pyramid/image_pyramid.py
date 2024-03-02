@@ -35,6 +35,10 @@ class ToImagePyramid(object):
 
         self.out_pyr = ImagePyramidBuffer(gpu, pyr_levels)
 
+        self.has_forward = True
+        self.has_backward = False
+        self.has_optim = False
+
         # PIPELINE OBJECTS:
         # these need to be accessible so that kompute can record input/output for pipelines
         self.forward_input_buffers = [self.image.buffer, self.out_pyr.pyr_lvl_buffer]
@@ -57,6 +61,9 @@ class ToImagePyramid(object):
         ]
 
     def backward_ops(self):
+        return []
+
+    def optim_ops(self):
         return []
 
     def basic_forward(self, image):

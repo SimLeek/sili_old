@@ -1,0 +1,97 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+struct PyramidLevel {
+    int startIdx;
+    int width;
+    int height;
+};
+
+layout(std430, binding = 0) buffer InputBuffer {
+    float inputImage[];
+};
+
+layout(std430, binding = 1) buffer PyramidData {
+    int channels;
+    int levels;
+    PyramidLevel pyramidLevels[];
+};
+
+layout(std430, binding = 2) buffer DepthConvBuffer {
+    float depthWeights[];
+};
+
+layout(std430, binding = 3) buffer OutputBuffer {
+    float outputErr[];
+};
+
+layout(std430, binding = 4) buffer InputErrBuffer {
+    float inputError[];
+};
+
+float bilinearInterpolation(float x, float y, float bottomLeft, float bottomRight, float topLeft, float topRight) {
+    float left = mix(topLeft, bottomLeft, y);
+    float right = mix(topRight, bottomRight, y);
+    return mix(left, right, x);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+
+    int in_level = -1;
+    int in_startIdx = -1;
+    int in_width = -1;
+    int in_height = -1;
+    for(int level = 0; level < levels; level++) {
+        if(int(idx) > pyramidLevels[level].startIdx * channels && in_level == -1) {
+            in_level = level;
+            in_startIdx = pyramidLevels[level].startIdx * channels;
+            in_width = pyramidLevels[level].width;
+            in_height = pyramidLevels[level].height;
+            // no breaks. All invocations run the same lines.
+        }
+    }
+    int y_current = int(((gl_GlobalInvocationID.x-in_startIdx) / channels) % in_height);
+    int x_current = int(((gl_GlobalInvocationID.x-in_startIdx) / channels) / in_height);
+    int c_current = int(int(gl_GlobalInvocationID.x) % channels);
+
+    float out_grad = outputErr[idx];
+    inputError[idx] = 0;
+    float input_grad = 0.0;
+    float depth_grad = 0.0;
+
+    for(int l_out = 0; l_out < levels; l_out++) {
+        if (l_out != in_level) {
+            float outputX = float(x_current) * float(pyramidLevels[l_out].width) / float(in_width);
+            float outputY = float(y_current) * float(pyramidLevels[l_out].height) / float(in_height);
+
+            // Find the four neighboring pixels for bilinear interpolation
+            int topLeftIdx = pyramidLevels[l_out].startIdx * channels + int(floor(outputX) * pyramidLevels[l_out].height * channels + floor(outputY) * channels + c_current);
+            int topRightIdx = topLeftIdx;
+            int bottomLeftIdx = topLeftIdx;
+            int bottomRightIdx = topRightIdx;
+            if(outputX+1 <= pyramidLevels[l_out].width){
+                topRightIdx = topLeftIdx + pyramidLevels[l_out].height * channels;
+            }
+            if(outputY+1 <= pyramidLevels[l_out].height){
+                bottomLeftIdx = topLeftIdx + channels;
+                bottomRightIdx = topRightIdx + channels;
+            }
+
+            // Perform bilinear interpolation
+            float topLeft = outputErr[topLeftIdx];
+            float topRight = outputErr[topRightIdx];
+            float bottomLeft = outputErr[bottomLeftIdx];
+            float bottomRight = outputErr[bottomRightIdx];
+            float bilin_grad = bilinearInterpolation(fract(outputX), fract(outputY), bottomLeft, bottomRight, topLeft, topRight);
+
+            // Compute gradients for input image
+            inputError[idx] += bilin_grad * depthWeights[in_level * levels + l_out];
+        } else {
+            inputError[idx] += outputErr[idx] * depthWeights[in_level * levels + l_out];
+        }
+    }
+
+}
