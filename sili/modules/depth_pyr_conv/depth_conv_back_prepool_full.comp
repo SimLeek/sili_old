@@ -66,18 +66,16 @@ void out_check(){
     }
 }
 
-layout(constant_id = 1) const uint offset = 0;
-layout(constant_id = 2) const float epsilon = 0.1;
+layout(constant_id = 1) const uint out_level = 0;
+layout(constant_id = 2) const uint l_index = 0;
+layout(constant_id = 3) const float epsilon = 0.1;
 
 void main() {
     // Get the global index
     uint globalIndex = gl_GlobalInvocationID.x;
-    //out_f[gl_WorkGroupID.x*levels].in_level = int(gl_LocalInvocationID.x); // WTF IS GOING ON!?
-    //out_f[gl_WorkGroupID.x*levels].out_level = int(gl_WorkGroupSize.x); // WTF IS GOING ON!?
-    //out_f[gl_WorkGroupID.x*levels].err_grad = int(gl_WorkGroupID.x); // WTF IS GOING ON!?
 
     // Initialize local variables
-    uint out_ind = uint(globalIndex);
+    uint out_ind = uint(globalIndex/levels);
     uint in_lvl = uint(globalIndex%levels);
 
     int in_startIdx = pyramidLevels[in_lvl].startIdx * channels;
@@ -91,31 +89,13 @@ void main() {
     shared_fwd_grad[localIndexX] = 0.0;
     next_index[localIndexX] = -1;
 
-    int out_lvl=-1;
-    int out_startIdx = -1;
-    int out_width = -1;
-    int out_height = -1;
-    for(int level=0;level<levels-1;level++) {
-        if(int(out_ind)>=pyramidLevels[level].startIdx*channels && int(out_ind)<pyramidLevels[level+1].startIdx*channels+channels){
-            out_lvl = level;
-            out_startIdx = pyramidLevels[level].startIdx*channels;
-            out_width = pyramidLevels[level].width;
-            out_height = pyramidLevels[level].height;
-            // no breaks. All invocations run the same lines.
-        }
-    }
-    if(out_lvl==-1){// top level wasn't checked
-        if(int(out_ind)>=pyramidLevels[levels-1].startIdx*channels && int(out_ind)<pyramidLevels[levels-1].startIdx*channels+channels) {
-            out_lvl = levels - 1;
-            out_startIdx = pyramidLevels[out_lvl].startIdx * channels;
-            out_width = pyramidLevels[out_lvl].width;
-            out_height = pyramidLevels[out_lvl].height;
-        }
-    }
+    int out_startIdx = pyramidLevels[out_level].startIdx*channels;
+    int out_width = pyramidLevels[out_level].width;
+    int out_height = pyramidLevels[out_level].height;
 
-    if(out_lvl!=-1) {
-        int y_current = int(((out_ind - out_startIdx) / channels) % out_height);
-        int x_current = int(((out_ind - out_startIdx) / channels) / out_height);
+    if(out_ind<out_width*out_height*channels) {
+        int y_current = int((out_ind / channels) % out_height);
+        int x_current = int((out_ind / channels) / out_height);
         int c_current = int(int(out_ind) % channels);
 
         float w_scale = float(in_width) / float(out_width);
@@ -147,12 +127,12 @@ void main() {
         //if our output is smaller, that means we were scaled and contributed to more pixels
         //float res_diff = (pyramidLevels[0].height * pyramidLevels[0].width) / (out_width * out_height);
 
-        float err_grad = input_val * outputPyrErr[out_ind] / (in_width*in_height);  // dG/dW
-        float out_grad = input_val * input_val * depthWeights[in_lvl * levels + out_lvl];  // dO/dW
+        float err_grad = input_val * outputPyrErr[out_startIdx+out_ind] / (in_width*in_height);  // dG/dW
+        float out_grad = input_val * input_val * depthWeights[in_lvl * levels + out_level];  // dO/dW
 
         // Load product into shared memory by the first thread in the workgroup
         shared_in_lvls[localIndexX] = int(in_lvl);
-        shared_out_lvls[localIndexX] = int(out_lvl);
+        shared_out_lvls[localIndexX] = int(out_level);
         shared_err_grad[localIndexX] = err_grad;
         shared_fwd_grad[localIndexX] = out_grad;
 
@@ -161,43 +141,26 @@ void main() {
 
         // max reduction
         // NOTE: workgroup size must be greater than the number of levels
-        uint start_index = 0;
-        do {
-            if (next_index[start_index]!=-1){
-                start_index = next_index[start_index];
-            }
-            next_index[start_index] = -1;
-
-            for (uint stride = (gl_WorkGroupSize.x-start_index) / 2; stride > 0; stride /= 2) {
-                if (localIndexX < stride+start_index && localIndexX>=start_index) {
-                    int other_index = int(localIndexX + stride);
-                    if (// history of competence matters: would you fire an executive that just messed up or an intern that messed up in the first minute? The answer should be obvious.
-                    shared_in_lvls[localIndexX] == shared_in_lvls[other_index] &&
-                    shared_out_lvls[localIndexX] == shared_out_lvls[other_index]
-                    ) {
-                        shared_err_grad[localIndexX] += shared_err_grad[other_index];
-                        shared_fwd_grad[localIndexX] += shared_fwd_grad[other_index];
-                    }
-                    if ((shared_out_lvls[localIndexX] != shared_out_lvls[other_index] && // determine next index by out level mismatch
-                        (next_index[localIndexX]==-1)))// only on first run
-                         {
-                        next_index[localIndexX] = other_index;
-                    } else if (next_index[localIndexX]==-1 || (next_index[other_index]!=-1 && next_index[other_index]<next_index[localIndexX])){
-                        // reduce all next_index on next runs
-                        next_index[localIndexX] = next_index[other_index];
-                    }
+        for (uint stride = (gl_WorkGroupSize.x) / 2; stride > 0; stride /= 2) {
+            if (localIndexX < stride) {
+                int other_index = int(localIndexX + stride);
+                if (//reduce similar only
+                shared_in_lvls[localIndexX] == shared_in_lvls[other_index] &&
+                shared_out_lvls[localIndexX] == shared_out_lvls[other_index]
+                ) {
+                    shared_err_grad[localIndexX] += shared_err_grad[other_index];
+                    shared_fwd_grad[localIndexX] += shared_fwd_grad[other_index];
                 }
-                barrier();
             }
-            start_index = next_index[start_index];
+            barrier();
+        }
 
-            // Write reduction to global memory for each workgroup
-            if (localIndexX <levels) {
-                out_f[gl_WorkGroupID.x].in_level = shared_in_lvls[localIndexX];
-                out_f[gl_WorkGroupID.x].out_level = shared_out_lvls[localIndexX];
-                out_f[gl_WorkGroupID.x].err_grad = shared_err_grad[localIndexX];
-                out_f[gl_WorkGroupID.x].out_grad = shared_fwd_grad[localIndexX];
-            }
-        }while(start_index!=-1);
+        // Write reduction to global memory for each workgroup
+        if (localIndexX <levels) {
+            out_f[l_index + gl_WorkGroupID.x*levels+in_lvl].in_level = shared_in_lvls[localIndexX];
+            out_f[l_index + gl_WorkGroupID.x*levels+in_lvl].out_level = shared_out_lvls[localIndexX];
+            out_f[l_index + gl_WorkGroupID.x*levels+in_lvl].err_grad = shared_err_grad[localIndexX];
+            out_f[l_index + gl_WorkGroupID.x*levels+in_lvl].out_grad = shared_fwd_grad[localIndexX];
+        }
     }
 }

@@ -124,17 +124,35 @@ class DepthPyrConv(object):
             shad_conv_reduce = get_shader(file_path + os.sep + 'conv_err_sum_reduce.comp')
 
             # private buffers
-            self.buf_conv_prepool = self.gpu.manager.tensor(np.zeros([int(4*self.in_img_pyr.levels[1] *np.ceil(calc_pyr_reduce_buf_size(self.in_img_pyr.levels, self.gpu.max_workgroup_invocations)))]))
+            num_levels = self.in_img_pyr.levels[1]
+            level_data = self.in_img_pyr.levels[2:]
+            l_index = 0
+            for l in range(num_levels):  # calculate the size of the output reduction... idk how tf...
+                l_size = level_data[l*3+1]*level_data[l*3+2]*self.in_img_pyr.channels
+                workgroup_size = min(l_size*num_levels,self.gpu.max_workgroup_invocations)
+                l_index = l_index + int(np.ceil(l_size / workgroup_size) * num_levels)
+            #l_index += num_levels  # last one
+
+            self.buf_conv_prepool = self.gpu.manager.tensor(np.zeros([int(l_index*4)]))
 
             # no special backwards input/output buffers, because the backprop ends in the conv buffer inside this object
-            self.algorithm_conv_prepool_1 = self.gpu.manager.algorithm(
-                [self.in_img_pyr.image_buffer, self.out_pyr_err.image_buffer, self.buf_conv_prepool, self.in_img_pyr.pyr_lvl_buffer, self.depth_conv.buffer,
-                 self.depth_conv_str.buffer],
-                spirv=shad_conv_back_prepool_1,
-                workgroup=[int(np.ceil((self.buf_conv_prepool.size()/4) * self.in_img_pyr.levels[1] / self.gpu.max_workgroup_invocations)), 0, 0],
-                # workgroup=[1, 0, 0],
-                spec_consts=np.asarray([self.gpu.max_workgroup_invocations], dtype=np.uint32).view(np.float32)
-            )
+            self.algorithm_conv_prepools_1 = []
+            l_index = 0
+            for l in range(num_levels):
+                #if l==0:
+                #    continue # debugging bs indices
+                l_start = level_data[l*3]*self.in_img_pyr.channels
+                l_size = level_data[l*3+1]*level_data[l*3+2]*self.in_img_pyr.channels
+                workgroup_size = min(l_size*num_levels,self.gpu.max_workgroup_invocations)
+                self.algorithm_conv_prepools_1.append(self.gpu.manager.algorithm(
+                    [self.in_img_pyr.image_buffer, self.out_pyr_err.image_buffer, self.buf_conv_prepool, self.in_img_pyr.pyr_lvl_buffer, self.depth_conv.buffer,
+                     self.depth_conv_str.buffer],
+                    spirv=shad_conv_back_prepool_1,
+                    workgroup=[int(np.ceil(l_size*num_levels / workgroup_size)), 0, 0],
+                    # workgroup=[1, 0, 0],
+                    spec_consts=np.asarray([workgroup_size, l, l_index], dtype=np.uint32).view(np.float32)
+                ))
+                l_index = l_index + int(np.ceil(l_size/workgroup_size)*num_levels)
 
             self.conv_prepool_reductions = []
             last_s0 = prev_s0 = int(self.buf_conv_prepool.size() / 4)
@@ -203,7 +221,7 @@ class DepthPyrConv(object):
         if self.backprop_input:
             ops.append(kp.OpAlgoDispatch(self.algorithm_input_back))
         if self.backprop_conv:
-            ops.append(kp.OpAlgoDispatch(self.algorithm_conv_prepool_1))
+            ops.extend(kp.OpAlgoDispatch(p1) for p1 in self.algorithm_conv_prepools_1)
             ops.extend(kp.OpAlgoDispatch(pr) for pr in self.conv_prepool_reductions)
             ops.append(kp.OpAlgoDispatch(self.algorithm_conv_back))
             ops.extend(kp.OpAlgoDispatch(ce) for ce in self.conv_err_reductions)
