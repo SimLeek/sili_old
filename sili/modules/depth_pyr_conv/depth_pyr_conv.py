@@ -33,6 +33,16 @@ def one_hot_mat(n, x, y):
     A[x,y] = 1
     return A
 
+def calc_pyr_reduce_buf_size(levels, workgroup_size, channels = 3):
+    num_levels = levels[1]
+    levels_array = levels[2:]
+    total_size = 0
+    for i in range(num_levels):
+        width = levels_array[3*i+1]
+        height = levels_array[3*i+2]
+        total_size += int(np.ceil(width*height*channels/workgroup_size))
+    return total_size
+
 class DepthPyrConv(object):
     def __init__(self,
                  gpu: GPUManager,
@@ -108,34 +118,33 @@ class DepthPyrConv(object):
         if backprop_conv:
             self.has_backward = True
             self.backprop_conv = True
-            shad_conv_back_prepool_1 = get_shader(file_path + os.sep + 'depth_pyr_backward_conv_prepool.comp')
+            shad_conv_back_prepool_1 = get_shader(file_path + os.sep + 'depth_conv_back_prepool_full.comp')
             shad_conv_back_prepool_2 = get_shader(file_path + os.sep + 'index2_value2_max_reduction.comp')
             shad_conv_back = get_shader(file_path + os.sep + 'depth_pyr_backward_conv.comp')
             shad_conv_reduce = get_shader(file_path + os.sep + 'conv_err_sum_reduce.comp')
 
             # private buffers
-            buf_conv_prepool = self.gpu.manager.tensor(np.zeros([int(np.ceil(self.in_img_pyr.size * 4 / self.gpu.max_workgroup_invocations))]))
-
+            self.buf_conv_prepool = self.gpu.manager.tensor(np.zeros([int(4*self.in_img_pyr.levels[1] *np.ceil(calc_pyr_reduce_buf_size(self.in_img_pyr.levels, self.gpu.max_workgroup_invocations)))]))
 
             # no special backwards input/output buffers, because the backprop ends in the conv buffer inside this object
             self.algorithm_conv_prepool_1 = self.gpu.manager.algorithm(
-                [self.in_img_pyr.image_buffer, self.out_pyr_err.image_buffer, buf_conv_prepool, self.in_img_pyr.pyr_lvl_buffer, self.depth_conv.buffer,
+                [self.in_img_pyr.image_buffer, self.out_pyr_err.image_buffer, self.buf_conv_prepool, self.in_img_pyr.pyr_lvl_buffer, self.depth_conv.buffer,
                  self.depth_conv_str.buffer],
                 spirv=shad_conv_back_prepool_1,
-                workgroup=[int(np.ceil(self.in_img_pyr.size * self.in_img_pyr.levels[1] / self.gpu.max_workgroup_invocations)), 0, 0],
+                workgroup=[int(np.ceil((self.buf_conv_prepool.size()/4) * self.in_img_pyr.levels[1] / self.gpu.max_workgroup_invocations)), 0, 0],
                 # workgroup=[1, 0, 0],
                 spec_consts=np.asarray([self.gpu.max_workgroup_invocations], dtype=np.uint32).view(np.float32)
             )
 
             self.conv_prepool_reductions = []
-            last_s0 = prev_s0 = int(buf_conv_prepool.size() / 4)
-            s0 = int(np.ceil(buf_conv_prepool.size() / 4 / self.gpu.max_workgroup_invocations))
+            last_s0 = prev_s0 = int(self.buf_conv_prepool.size() / 4)
+            s0 = int(np.ceil(self.buf_conv_prepool.size() / 4 / self.gpu.max_workgroup_invocations))
             while True:
                 if s0 <= 1:  # do while loop to ensure we include the final reduce
                     break
                 self.conv_prepool_reductions.append(
                     self.gpu.manager.algorithm(
-                        [buf_conv_prepool, self.depth_conv_str.buffer],
+                        [self.buf_conv_prepool, self.depth_conv_str.buffer],
                         spirv=shad_conv_back_prepool_2,
                         workgroup=[last_s0, 0, 0],
                         spec_consts=np.asarray([s0, prev_s0, self.in_img_pyr.levels[1]], dtype=np.uint32).view(np.float32)
@@ -143,8 +152,8 @@ class DepthPyrConv(object):
                 )
                 last_s0 = int(np.ceil(prev_s0 / s0))
                 prev_s0 = s0
-                s0 = int(np.ceil(s0 / 2))
-
+                s0 = int(np.ceil(s0 / last_s0))
+            last_s0 = prev_s0
             memory_sensitive_divisor = int(
                 2 ** int(np.log2(self.gpu.maxComputeSharedMemorySize / (
                             self.in_img_pyr.levels[1] * self.in_img_pyr.levels[1] * 4 * 2))))
@@ -155,7 +164,7 @@ class DepthPyrConv(object):
                 (int(np.ceil(last_s0/memory_sensitive_divisor)), self.in_img_pyr.levels[1], self.in_img_pyr.levels[1])))
 
             self.algorithm_conv_back = self.gpu.manager.algorithm(
-                [buf_conv_prepool, self.depth_conv_err.buffer, self.depth_conv_contrib.buffer],
+                [self.buf_conv_prepool, self.depth_conv_err.buffer, self.depth_conv_contrib.buffer],
                 spirv=shad_conv_back,
                 workgroup=[int(np.ceil(last_s0 / memory_sensitive_divisor)), 0, 0],
                 spec_consts=np.asarray([memory_sensitive_divisor, self.in_img_pyr.levels[1], last_s0], dtype=np.uint32).view(

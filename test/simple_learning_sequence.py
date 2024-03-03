@@ -22,7 +22,7 @@ class GPUMLPipeline(object):
         for m in self.module_list:
             if m.has_forward and m.forward_input_buffers:
                 self.upload_sequence.record(kp.OpTensorSyncDevice([*m.forward_input_buffers]))
-        for m in self.module_list:
+        for m in reversed(self.module_list):
             if m.has_backward and m.backward_input_buffers:
                 self.upload_sequence.record(kp.OpTensorSyncDevice([*m.backward_input_buffers]))
         for m in self.module_list:
@@ -35,7 +35,7 @@ class GPUMLPipeline(object):
         for m in self.module_list:
             for f in m.forward_ops():
                 self.full_sequence.record(f)
-        for m in self.module_list:
+        for m in reversed(self.module_list):
             for b in m.backward_ops():
                 self.full_sequence.record(b)
         for m in self.module_list:
@@ -87,13 +87,14 @@ if __name__ == "__main__":
         # set these so that only these are moved to/from the gpu
         # can be set to error or other info for debugging
         input_buffers=im_pyr.forward_input_buffers,
-        output_buffers=depth_pyr_conv_optim.optim_output_buffers
+#        output_buffers=depth_pyr_conv.forward_output_buffers
+        output_buffers=depth_pyr_conv_optim.optim_output_buffers + [depth_pyr_conv.buf_conv_prepool] + [depth_pyr_conv.out_pyr_err.image_buffer]
     )
     d = DirectDisplay()
     while not d.window.is_closing:
         out_buf = runner.run_once(im)
         for i,o in enumerate(depth_pyr_conv_optim.optim_output_buffers):
-            o_np = o.data().reshape(17,17,1)
+            o_np = o.data()[:17*17].reshape(17,17,1)
             o_np = o_np.repeat(3, axis=-1)
             min_o = np.min(o_np)
             max_o = np.max(o_np)
@@ -103,4 +104,33 @@ if __name__ == "__main__":
                 num[:]= 0.5
                 den = 1.0
             d.imshow(f"im {i}", num/den)
+        for i, o in enumerate(depth_pyr_conv.out_pyr_err.get()):
+            min_o = np.min(o)
+            max_o = np.max(o)
+            num = (o - min_o)
+            den = (max_o - min_o)
+            if den == 0.0:
+                num[:] = 0.5
+                den = 1.0
+            d.imshow(f"im err {i}", num / den)
+        pre = depth_pyr_conv.buf_conv_prepool.data().reshape(-1,4, 1)
+        pre = pre.repeat(3, axis=-1)
+        min_o = np.min(pre)
+        max_o = np.max(pre)
+        num = (pre - min_o)
+        den = (max_o - min_o)
+        d.imshow(f"im pre", num/den)
         d.update()
+    '''while not d.window.is_closing:
+        out_buf = runner.run_once(im)
+
+        for i, o in enumerate(depth_pyr_conv.out_pyr.get()):
+            min_o = np.min(o)
+            max_o = np.max(o)
+            num = (o - min_o)
+            den = (max_o - min_o)
+            if den == 0.0:
+                num[:] = 0.5
+                den = 1.0
+            d.imshow(f"im {i}", num / den)
+        d.update()'''

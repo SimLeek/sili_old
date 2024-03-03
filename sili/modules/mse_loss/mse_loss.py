@@ -42,13 +42,13 @@ class MSELoss(object):
         if not isinstance(error_buffer, kp.Tensor):
             raise TypeError("Error Buffer must be a buffer attached to a device")
         else:
-            self.err_buff = error_buffer
+            self.err_grad_buff = error_buffer
 
         self.has_forward = forward
         if forward:
             self.forward_shader = get_shader(file_path + os.sep + 'mse_loss.comp')
 
-            #self.err_buff = gpu.buffer(np.zeros_like(self.act_buff.data()))
+            self.err_buff = gpu.buffer(np.zeros_like(self.act_buff.data()))
 
             # PIPELINE OBJECTS:
             # FORWARD
@@ -71,8 +71,6 @@ class MSELoss(object):
         self.has_backward = backprop
         if backprop:
             self.backward_shader = get_shader(file_path + os.sep + 'mse_loss_backward.comp')
-
-            self.err_grad_buff = gpu.buffer(np.zeros_like(self.act_buff.data()))
 
             self.backward_input_buffers = [self.pred_buff, self.act_buff]
             self.backward_output_buffers = [self.err_grad_buff]
@@ -143,7 +141,7 @@ class MSELoss(object):
             self.basic_sequence = self.gpu.manager.sequence()
             self.basic_sequence.record(kp.OpTensorSyncDevice([*self.backward_input_buffers]))
             for b in self.backward_ops():
-                self.basic_sequence.record(kp.OpAlgoDispatch(b))
+                self.basic_sequence.record(b)
             self.basic_sequence.record(kp.OpTensorSyncLocal([*self.backward_output_buffers]))
         self.basic_sequence.eval()
         return self.err_grad_buff
@@ -170,7 +168,8 @@ if __name__ == '__main__':
     gpu = GPUManager()
     act_buf = ImageBuffer(gpu, im)
     pred_buf = ImageBuffer(gpu, im+np.random.normal(0.1, 0.5, im.shape))
-    err = MSELoss(gpu, pred_buf.buffer, act_buf.buffer, forward=False, backprop=True)
+    err_buf = ImageBuffer(gpu, np.zeros_like(im))
+    err = MSELoss(gpu, pred_buf.buffer, act_buf.buffer, err_buf.buffer, forward=False, backprop=True)
     err.display_basic_backward_sequence(shape=im.shape)
 
     # im_pyr = pyr.run_basic_forward_sequence(im)

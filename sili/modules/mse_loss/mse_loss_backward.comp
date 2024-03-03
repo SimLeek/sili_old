@@ -22,7 +22,7 @@ void main() {
     uint index = gl_GlobalInvocationID.x;
 
     // Compute the derivative of the MSE loss with respect to the predicted value
-    float d_loss_d_predicted = 2.0 * (predicted[index] - actual[index]);
+    float d_loss_d_predicted = -2.0 * (predicted[index] - actual[index]);
 
     // Compute the error gradient using the derivative and chain rule
     error_gradient[index] = d_loss_d_predicted;

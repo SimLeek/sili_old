@@ -46,6 +46,7 @@ void main() {
     weights[idx] -= (lr / (abs(weight_cons[idx]) + epsilon)) * weight_grads[idx];
 
     // clear grads&contribs here to make sure they don't acumulate.
-    weight_grads[idx] = 0;
-    weight_contribs[idx] = 0;
+    // except don't for now since we're setting them elsewhere.
+    //weight_grads[idx] = 0;
+    //weight_contribs[idx] = 0;
 }
