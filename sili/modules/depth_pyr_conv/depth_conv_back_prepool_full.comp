@@ -55,7 +55,6 @@ shared float shared_err_grad[gl_WorkGroupSize.x];
 shared float shared_fwd_grad[gl_WorkGroupSize.x];
 shared int shared_in_lvls[gl_WorkGroupSize.x];
 shared int shared_out_lvls[gl_WorkGroupSize.x];
-shared int next_index[gl_WorkGroupSize.x];
 
 void out_check(){
     if (gl_LocalInvocationID.x == 0) {
@@ -68,7 +67,6 @@ void out_check(){
 
 layout(constant_id = 1) const uint out_level = 0;
 layout(constant_id = 2) const uint l_index = 0;
-layout(constant_id = 3) const float epsilon = 0.1;
 
 void main() {
     // Get the global index
@@ -87,7 +85,6 @@ void main() {
     shared_out_lvls[localIndexX] = -1;
     shared_err_grad[localIndexX] = 0.0;
     shared_fwd_grad[localIndexX] = 0.0;
-    next_index[localIndexX] = -1;
 
     int out_startIdx = pyramidLevels[out_level].startIdx*channels;
     int out_width = pyramidLevels[out_level].width;
@@ -105,7 +102,7 @@ void main() {
         float inputY = float(y_current) * h_scale;
 
         // Find the four neighboring pixels for bilinear interpolation
-        int topLeftIdx = in_startIdx * channels + int(floor(inputX) * in_height * channels + floor(inputY) * channels + c_current);
+        int topLeftIdx = in_startIdx + int(floor(inputX) * in_height * channels + floor(inputY) * channels + c_current);
         int topRightIdx = topLeftIdx;
         int bottomLeftIdx = topLeftIdx;
         int bottomRightIdx = topRightIdx;
@@ -127,7 +124,7 @@ void main() {
         //if our output is smaller, that means we were scaled and contributed to more pixels
         //float res_diff = (pyramidLevels[0].height * pyramidLevels[0].width) / (out_width * out_height);
 
-        float err_grad = input_val * outputPyrErr[out_startIdx+out_ind] / (in_width*in_height);  // dG/dW
+        float err_grad = input_val * outputPyrErr[out_startIdx+out_ind];  // dG/dW
         float out_grad = input_val * input_val * depthWeights[in_lvl * levels + out_level];  // dO/dW
 
         // Load product into shared memory by the first thread in the workgroup
@@ -139,7 +136,7 @@ void main() {
         // Synchronize within the work group
         barrier();
 
-        // max reduction
+        // equivalent sum reduction
         // NOTE: workgroup size must be greater than the number of levels
         for (uint stride = (gl_WorkGroupSize.x) / 2; stride > 0; stride /= 2) {
             if (localIndexX < stride) {

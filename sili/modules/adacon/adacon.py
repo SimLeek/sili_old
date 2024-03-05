@@ -65,7 +65,7 @@ class Adacon(object):
                        0],
             spec_consts=np.concatenate(
                 (np.asarray([int(min(self.gpu.max_workgroup_invocations, self.w_buf.size()))], dtype=np.uint32).view(
-                    np.float32), [0.1, 1e-2]))
+                    np.float32), [0.1, 1]))
 
         )
 

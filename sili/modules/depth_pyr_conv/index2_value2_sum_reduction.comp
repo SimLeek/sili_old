@@ -1,0 +1,69 @@
+#version 450
+
+layout (local_size_x_id = 0) in;
+
+layout(constant_id = 1) const uint max_idx = 9999;  //fix for oob
+layout(constant_id = 2) const uint input_offset = 0;
+layout(constant_id = 3) const uint output_offset = 0;
+layout(constant_id = 4) const uint levels = 1;
+
+struct IndexValue {
+    int in_level;
+    int out_level;
+    float err_grad;  // used for changing value of connection
+    float out_grad;  // used for changing strength of connection for some optim algorithms
+};
+
+layout(std430, binding = 0) buffer OutputBuffer {
+    IndexValue out_f[];
+};
+
+shared float shared_errgs[gl_WorkGroupSize.x];
+shared float shared_outgs[gl_WorkGroupSize.x];
+shared int shared_in_lvls[gl_WorkGroupSize.x];
+shared int shared_out_lvls[gl_WorkGroupSize.x];
+
+void main() {
+    uint globalIndex = gl_GlobalInvocationID.x + input_offset;
+    uint local_index = gl_LocalInvocationID.x;
+
+    uint in_lvl = -1;
+    if(globalIndex<max_idx) {
+        shared_in_lvls[local_index] = out_f[globalIndex].in_level;
+        in_lvl = out_f[globalIndex].in_level;
+        shared_out_lvls[local_index] = out_f[globalIndex].out_level;
+        shared_errgs[local_index] = out_f[globalIndex].err_grad;
+        shared_outgs[local_index] = out_f[globalIndex].out_grad;
+    }
+    else{
+        shared_in_lvls[local_index] = -1;
+        shared_out_lvls[local_index] = -1;
+        shared_errgs[local_index] = -1;
+        shared_outgs[local_index] = -1;
+    }
+
+    barrier();
+
+        // equivalent sum reduction
+    for (uint stride = gl_WorkGroupSize.x / 2; stride > 0; stride /= 2) {
+        if (local_index < stride) {
+            uint other_index = local_index + stride;
+            if( //reduce similar only
+                shared_in_lvls[local_index] == shared_in_lvls[other_index] &&
+                shared_out_lvls[local_index] == shared_out_lvls[other_index]
+            ) {
+                shared_errgs[local_index] += shared_errgs[other_index];
+                shared_outgs[local_index] += shared_outgs[other_index];
+            }
+        }
+        barrier();
+    }
+
+    // Write reduction to global memory for each workgroup
+     if (local_index <levels) {
+        out_f[output_offset + gl_WorkGroupID.x*levels+in_lvl].in_level = shared_in_lvls[local_index];
+        out_f[output_offset + gl_WorkGroupID.x*levels+in_lvl].out_level = shared_out_lvls[local_index];
+        out_f[output_offset + gl_WorkGroupID.x*levels+in_lvl].err_grad = shared_errgs[local_index];
+        out_f[output_offset + gl_WorkGroupID.x*levels+in_lvl].out_grad = shared_outgs[local_index];
+    }
+}

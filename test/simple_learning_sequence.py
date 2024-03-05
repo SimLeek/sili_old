@@ -51,6 +51,8 @@ class GPUMLPipeline(object):
         return self.output_buffers
 
 
+def zeros(i):
+    return np.zeros((i,i))
 
 if __name__ == "__main__":
     im = cv2.imread("files/test_ai_pls_ignore.png").astype(np.float32) / 255
@@ -60,7 +62,7 @@ if __name__ == "__main__":
     # err: grad and contrib seem to both be zero
 
     im_pyr = ToImagePyramid(gpu, im)
-    depth_pyr_conv = DepthPyrConv(gpu, im_pyr.out_pyr, depth_edge_matrix, backprop_conv=True)
+    depth_pyr_conv = DepthPyrConv(gpu, im_pyr.out_pyr, zeros, backprop_conv=True)
     depth_pyr_conv_optim = Adacon(gpu,
                                   depth_pyr_conv.depth_conv.buffer,
                                   depth_pyr_conv.depth_conv_err.buffer,
@@ -88,7 +90,7 @@ if __name__ == "__main__":
         # can be set to error or other info for debugging
         input_buffers=im_pyr.forward_input_buffers,
 #        output_buffers=depth_pyr_conv.forward_output_buffers
-        output_buffers=depth_pyr_conv_optim.optim_output_buffers + [depth_pyr_conv.buf_conv_prepool] + [depth_pyr_conv.out_pyr_err.image_buffer]
+        output_buffers=depth_pyr_conv_optim.optim_output_buffers + [depth_pyr_conv.buf_conv_prepool] + [depth_pyr_conv.out_pyr_err.image_buffer] #+ [depth_pyr_conv.out_pyr.image_buffer]
     )
     d = DirectDisplay()
     while not d.window.is_closing:
@@ -113,6 +115,15 @@ if __name__ == "__main__":
                 num[:] = 0.5
                 den = 1.0
             d.imshow(f"im err {i}", num / den)
+        '''for i, o in enumerate(depth_pyr_conv.out_pyr.get()):
+            min_o = np.min(o)
+            max_o = np.max(o)
+            num = (o - min_o)
+            den = (max_o - min_o)
+            if den == 0.0:
+                num[:] = 0.5
+                den = 1.0
+            d.imshow(f"im p {i}", num / den)'''
         pre = depth_pyr_conv.buf_conv_prepool.data().reshape(-1,4, 1)
         pre = pre.repeat(3, axis=-1)
         min_o = np.min(pre)
