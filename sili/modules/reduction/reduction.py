@@ -7,11 +7,12 @@ import os
 from sili.core.buffers import ImageBuffer, ImagePyramidBuffer, calculate_pyramid_levels, ConvDepthBuffer, \
     ConvDepthReductionBuffer
 from sili.core.devices.gpu import GPUManager, get_shader
+from sili.modules.base import Module
 
 file_path = os.path.dirname(os.path.abspath(__file__))
 
 
-class Reduction(object):
+class Reduction(Module):
     def __init__(self,
                  gpu: GPUManager,
                  reduction_io: kp.Tensor,

@@ -22,9 +22,9 @@ layout(std430, binding = 3) buffer con_array {
 layout(constant_id = 1) const float epsilon = 0.1;
 // these four values might all need parameter tuning by a neural net:
 layout(constant_id = 2) const float lr = 1e-3;
-layout(constant_id = 3) const float decay = 10.0;
+layout(constant_id = 3) const float decay = 1.0;
 layout(constant_id = 4) const float grad_mul = 1.0;
-layout(constant_id = 5) const float contrib_mul = 1.0;
+layout(constant_id = 5) const float contrib_mul = 0.1;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;

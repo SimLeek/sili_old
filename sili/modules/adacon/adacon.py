@@ -7,11 +7,11 @@ import os
 from sili.core.buffers import ImageBuffer, ImagePyramidBuffer, calculate_pyramid_levels, ConvDepthBuffer, \
     ConvDepthReductionBuffer
 from sili.core.devices.gpu import GPUManager, get_shader
-
+from sili.modules.base import Module
 file_path = os.path.dirname(os.path.abspath(__file__))
 
 
-class Adacon(object):
+class Adacon(Module):
     def __init__(self,
                  gpu: GPUManager,
                  weight_buffer: kp.Tensor,
@@ -65,7 +65,7 @@ class Adacon(object):
                        0],
             spec_consts=np.concatenate(
                 (np.asarray([int(min(self.gpu.max_workgroup_invocations, self.w_buf.size()))], dtype=np.uint32).view(
-                    np.float32), [0.1, 1]))
+                    np.float32), [0.1, 1e-1]))
 
         )
 

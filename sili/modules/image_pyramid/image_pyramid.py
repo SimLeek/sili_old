@@ -6,11 +6,12 @@ import os
 
 from sili.core.buffers import ImageBuffer, ImagePyramidBuffer, calculate_pyramid_levels
 from sili.core.devices.gpu import GPUManager, get_shader
+from sili.modules.base import Module
 
 file_path = os.path.dirname(os.path.abspath(__file__))
 
 
-class ToImagePyramid(object):
+class ToImagePyramid(Module):
     def __init__(self,
                  gpu: GPUManager,
                  image: ImageBuffer,

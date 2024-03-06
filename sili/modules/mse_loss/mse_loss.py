@@ -3,6 +3,7 @@ import numpy as np
 from displayarray import DirectDisplay
 import cv2
 import os
+from sili.modules.base import Module
 
 from sili.core.buffers import ImageBuffer, ImagePyramidBuffer, calculate_pyramid_levels, ConvDepthBuffer, \
     ConvDepthReductionBuffer
@@ -11,7 +12,7 @@ from sili.core.devices.gpu import GPUManager, get_shader
 file_path = os.path.dirname(os.path.abspath(__file__))
 
 
-class MSELoss(object):
+class MSELoss(Module):
     def __init__(self,
                  gpu: GPUManager,
                  prediction_buffer: kp.Tensor,

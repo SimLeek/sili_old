@@ -3,10 +3,10 @@ import numpy as np
 from displayarray import DirectDisplay
 import cv2
 import os
-
-from sili.core.buffers import ImageBuffer, ImagePyramidBuffer, calculate_pyramid_levels, ConvDepthBuffer, ConvDepthReductionBuffer
-from sili.core.devices.gpu import GPUManager, get_shader
 from sili.modules.base import Module
+
+from sili.core.buffers import ImageBuffer, ImagePyramidBuffer, calculate_pyramid_levels, ConvVertPyrBuffer, ConvDepthReductionBuffer
+from sili.core.devices.gpu import GPUManager, get_shader
 
 file_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -45,22 +45,16 @@ def calc_pyr_reduce_buf_size(levels, workgroup_size, channels = 3):
     return total_size
 
 class DepthPyrConv(Module):
-    def __init__(self,
-                 gpu: GPUManager,
-                 image_pyr: ImagePyramidBuffer,
-                 init_conv = None,
-                 backprop_input_buf = None,
-                 backprop_conv = False):
+    def __init__(self, gpu: GPUManager, image_pyr: ImagePyramidBuffer, init_conv=None, backprop_input_buf=None,
+                 backprop_conv=False):
         """
 
         :param gpu: the GPUManager
         :param image_pyr: Either an ImagePyramidBuffer or a list containing the widths and heights of all images in pyr
         """
-        self.reverse = False  # set this to true for pipeline creators to only use it for backwards
-        # self.symmetric = True  # conv and conv transpose is the same since the transpose is learned
+        super().__init__(gpu)
 
-        self.gpu = gpu
-        self.forward_shader = get_shader(file_path + os.sep + 'depth_pyr_forward.comp')
+        self.forward_shader = get_shader(file_path + os.sep + 'vert_pyr_forward.comp')
         if not isinstance(image_pyr, ImagePyramidBuffer):
             self.in_img_pyr = ImagePyramidBuffer(self.gpu, image_pyr)
         else:
@@ -68,21 +62,21 @@ class DepthPyrConv(Module):
 
         self.out_pyr = ImagePyramidBuffer(gpu, self.in_img_pyr.levels, use_lvl_buf=False)
         if callable(init_conv):
-            self.depth_conv = ConvDepthBuffer(gpu, init_conv(self.in_img_pyr.levels[1]))
+            self.vert_conv = ConvVertPyrBuffer(gpu, init_conv(self.in_img_pyr.levels[1]))
+        elif isinstance(init_conv, np.ndarray):
+            self.vert_conv = ConvVertPyrBuffer(gpu, init_conv)
         else:
-            self.depth_conv = ConvDepthBuffer(gpu, np.zeros((self.in_img_pyr.levels[1], self.in_img_pyr.levels[1])))
-        self.depth_conv_str = ConvDepthBuffer(gpu, np.zeros((self.in_img_pyr.levels[1], self.in_img_pyr.levels[1])))  # weight strengths, for adagrad
+            self.vert_conv = ConvVertPyrBuffer(gpu, np.zeros((self.in_img_pyr.levels[1], 3)))
+        self.depth_conv_str = ConvVertPyrBuffer(gpu, np.zeros_like(self.vert_conv.buffer.data()))  # adagrad weights
 
         # PIPELINE OBJECTS:
         # FORWARD
         # these need to be accessible so that kompute can record input/output for pipelines
-        self.forward_input_buffers = [self.in_img_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.depth_conv.buffer]
+        self.forward_input_buffers = [self.in_img_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.vert_conv.buffer]
         self.forward_output_buffers = [self.out_pyr.image_buffer]
 
-        # todo: this may be a more general superclass method
-        # this is the part that gets shoved into popelines
         self.forward_algorithm = self.gpu.manager.algorithm(
-            [self.in_img_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.out_pyr.image_buffer, self.depth_conv.buffer],
+            [self.in_img_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.out_pyr.image_buffer, self.vert_conv.buffer],
             spirv=self.forward_shader,
             workgroup=[int(np.ceil(self.in_img_pyr.size / self.gpu.max_workgroup_invocations)), 0, 0],
             spec_consts=np.asarray([self.gpu.max_workgroup_invocations], dtype=np.uint32).view(np.float32)
@@ -95,7 +89,6 @@ class DepthPyrConv(Module):
         # BACKWARD:
         self.out_pyr_err = ImagePyramidBuffer(gpu, self.in_img_pyr.levels, use_lvl_buf=False)
 
-
         # this is input to the backwards op, so input should come from later parts of the pipeline
         self.backward_input_buffers = []
         self.backward_output_buffers = []
@@ -106,7 +99,7 @@ class DepthPyrConv(Module):
             self.backprop_input = True
             shad_input_back = get_shader(file_path + os.sep + 'depth_pyr_backward_input.comp')
 
-            self.backward_input_buffers = [self.out_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.depth_conv.buffer, self.out_pyr_err]
+            self.backward_input_buffers = [self.out_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.vert_conv.buffer, self.out_pyr_err]
             self.backward_output_buffers = [backprop_input_buf]
 
             self.algorithm_input_back = self.gpu.manager.algorithm(
@@ -147,7 +140,7 @@ class DepthPyrConv(Module):
                 l_size = level_data[l*3+1]*level_data[l*3+2]*self.in_img_pyr.channels
                 workgroup_size = min(l_size*num_levels,self.gpu.max_workgroup_invocations)
                 self.algorithm_conv_prepools_1.append(self.gpu.manager.algorithm(
-                    [self.in_img_pyr.image_buffer, self.out_pyr_err.image_buffer, self.buf_conv_prepool, self.in_img_pyr.pyr_lvl_buffer, self.depth_conv.buffer,
+                    [self.in_img_pyr.image_buffer, self.out_pyr_err.image_buffer, self.buf_conv_prepool, self.in_img_pyr.pyr_lvl_buffer, self.vert_conv.buffer,
                      self.depth_conv_str.buffer],
                     spirv=shad_conv_back_prepool_1,
                     workgroup=[int(np.ceil(l_size*num_levels / workgroup_size)), 0, 0],
@@ -249,7 +242,7 @@ class DepthPyrConv(Module):
     def optim_buffs(self):
         # note: it's fine that depth_conv_err is larger than depth conv.
         #  Optim implementations should take depth_conv.size as input
-        return [self.depth_conv, self.depth_conv_err, self.depth_conv_contrib, self.depth_conv_str]
+        return [self.vert_conv, self.depth_conv_err, self.depth_conv_contrib, self.depth_conv_str]
 
     def basic_forward(self, image_pyr):
         # todo: make this a superclass method
