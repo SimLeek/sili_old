@@ -54,8 +54,6 @@ void main() {
     uint out_y_idx = ((idx-out_startIdx)/channels)%out_width;
     uint out_c_idx = idx%channels;
 
-    uint out_idx = out_startIdx+(out_y_idx*out_height+out_x_idx)*channels + out_c_idx;
-
     float result = 0;
     for(int k=0; k<kernel_height; k++){
         int h_diff = k-int(kernel_height/2);
@@ -71,7 +69,7 @@ void main() {
         //padding is zero
     }
 
-    outputImage[out_idx] = result;
+    outputImage[idx] = result;
 
     // should show RGB bands in either vertical or horizontal
     /*uint wid = gl_WorkGroupID.x;

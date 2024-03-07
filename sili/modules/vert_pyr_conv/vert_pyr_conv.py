@@ -97,9 +97,9 @@ class DepthPyrConv(Module):
         if backprop_input_buf is not None:
             self.has_backward = True
             self.backprop_input = True
-            shad_input_back = get_shader(file_path + os.sep + 'depth_pyr_backward_input.comp')
+            shad_input_back = get_shader(file_path + os.sep + 'vert_pyr_backward_input.comp')
 
-            self.backward_input_buffers = [self.out_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.vert_conv.buffer, self.out_pyr_err]
+            self.backward_input_buffers = [self.in_img_pyr.pyr_lvl_buffer, self.vert_conv.buffer, self.out_pyr_err]
             self.backward_output_buffers = [backprop_input_buf]
 
             self.algorithm_input_back = self.gpu.manager.algorithm(

@@ -95,7 +95,6 @@ class DepthPyrConv(Module):
         # BACKWARD:
         self.out_pyr_err = ImagePyramidBuffer(gpu, self.in_img_pyr.levels, use_lvl_buf=False)
 
-
         # this is input to the backwards op, so input should come from later parts of the pipeline
         self.backward_input_buffers = []
         self.backward_output_buffers = []
@@ -106,7 +105,7 @@ class DepthPyrConv(Module):
             self.backprop_input = True
             shad_input_back = get_shader(file_path + os.sep + 'depth_pyr_backward_input.comp')
 
-            self.backward_input_buffers = [self.out_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.depth_conv.buffer, self.out_pyr_err]
+            self.backward_input_buffers = [self.in_img_pyr.pyr_lvl_buffer, self.depth_conv.buffer, self.out_pyr_err]
             self.backward_output_buffers = [backprop_input_buf]
 
             self.algorithm_input_back = self.gpu.manager.algorithm(

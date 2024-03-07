@@ -21,7 +21,7 @@ class MSELoss(Module):
                  forward=False,
                  backprop=True
                  ):
-        """
+        """ Mean squared error loss.
 
         :param gpu: the GPUManager
         :param prediction_buffer: the kp.Tensor object

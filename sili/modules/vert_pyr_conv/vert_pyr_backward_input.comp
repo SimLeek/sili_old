@@ -1,0 +1,91 @@
+#version 430
+
+layout (local_size_x_id = 0) in;
+
+struct PyramidLevel {
+    int startIdx;
+    int width;
+    int height;
+};
+
+layout(std430, binding = 0) buffer PyramidData {
+    int channels;
+    int levels;
+    PyramidLevel pyramidLevels[];
+};
+
+layout(std430, binding = 1) buffer vertConvBuffer {
+    uint kernel_height;
+    float vertWeights[];
+};
+
+layout(std430, binding = 2) buffer OutputBuffer {
+    float outputErr[];
+};
+
+layout(std430, binding = 3) buffer InputBuffer {
+    float inputImage[];
+};
+
+layout(std430, binding = 3) buffer InputConBuffer {
+    float inputContrib[];
+};
+
+layout(std430, binding = 3) buffer InputErrBuffer {
+    float inputError[];
+};
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+
+    int in_level = -1;
+    int in_startIdx = -1;
+    int in_width = -1;
+    int in_height = -1;
+    for(int level=0;level<levels-1;level++) {
+        if(int(idx)>=pyramidLevels[level].startIdx*channels && int(idx)<pyramidLevels[level+1].startIdx*channels){
+            in_level = level;
+            in_startIdx = pyramidLevels[level].startIdx*channels;
+            in_width = pyramidLevels[level].width;
+            in_height = pyramidLevels[level].height;
+            // no breaks. All invocations run the same lines.
+        }
+    }
+    if(in_level==-1){// top level wasn't checked
+        in_level = levels-1;
+        in_startIdx = pyramidLevels[in_level].startIdx*channels;
+        in_width = pyramidLevels[in_level].width;
+        in_height = pyramidLevels[in_level].height;
+    }
+    int y_current = int(((idx-in_startIdx) / channels) % in_height);
+    int x_current = int(((idx-in_startIdx) / channels) / in_height);
+    int c_current = int(idx % channels);
+
+    uint in_x_idx = ((idx-in_startIdx)/channels)/in_width;
+    uint in_y_idx = ((idx-in_startIdx)/channels)%in_width;
+    uint in_c_idx = idx%channels;
+
+    float out_grad = outputErr[idx];
+    inputError[idx] = 0;
+    float input_grad = 0.0;
+    float contrib_grad = 0.0;
+
+    //conv transpose on error is backprop
+    for(int k=0; k<kernel_height; k++) {
+        int h_diff = k-int(kernel_height/2);
+
+        uint err_y_idx = in_y_idx-h_diff;
+
+        if(in_y_idx>=0 && in_y_idx<in_height){
+            uint in_idx = in_startIdx+(err_y_idx*in_height+in_x_idx)*channels + in_c_idx;
+            // this is just weight times output error:
+            input_grad+=outputErr[in_idx]*vertWeights[in_level*levels+k]; // dG/dI
+            // this is just weight times output (output contribution from specific synapse):
+            contrib_grad+=inputImage[in_idx]*vertWeights[in_level*levels+k]*vertWeights[in_level*levels+k]; // dO/dI
+        }
+    }
+
+    inputError[idx] = input_grad;
+    inputContrib[idx] = contrib_grad;
+
+}

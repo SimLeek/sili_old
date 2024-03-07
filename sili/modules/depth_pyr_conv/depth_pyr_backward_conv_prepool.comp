@@ -135,7 +135,9 @@ void main() {
         //if our output is smaller, that means we were scaled and contributed to more pixels
         //float res_diff = (pyramidLevels[0].height * pyramidLevels[0].width) / (out_width * out_height);
 
+        // this is just input times output error:
         float err_grad = input_val * outputPyrErr[out_ind];  // dG/dW
+        // this is just input times output (output contribution from specific synapse):
         float out_grad = input_val * input_val * depthWeights[in_lvl*levels + out_lvl];  // dO/dW
 
         // Load product into shared memory by the first thread in the workgroup
