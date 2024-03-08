@@ -20,6 +20,14 @@
   * Alt Huge optimization: seperate out contrib calculation into its own kernel to run alongside forward pass.
   * (We can use the same buffer in multiple ops for huge memory reduction, but then contrib can only be calculated in the forward pass, because afterwards the input buffer is reused and modified)
   * Final optimization: use one large buffer for all images and just restrict global/max size
+* Add noise to loss or optim function (done)
+  * if the input & actual is perfect, the gradient will always push the synapses towards what they should be, but never make them exact
+  * However, adding noise will put the synapses above and below the perfect values. Then, noise can be reduced until synapses are closer than otherwise possible.
+  * (synapse noise may be modulated by connection strength)
+* Allow modules to take input/output/backprop/backout buffers as input. 
+  * This will allow for 'double buffering' and requiring one buffer for a whole network, instead of doubling the size. A huge performance increase when training models.
+  * Should throw an error if the buffer is under the required size, but not if it's over.
+  * This also means using the buffer's size to determine op size should be replaced
 * Move out standard non-sparse code into its own library: DeCeIL (Device Centric Intelligence Library)
   * Convert conv backwards to not use sparse max reduce, just be slow
   * take out pyramid ops

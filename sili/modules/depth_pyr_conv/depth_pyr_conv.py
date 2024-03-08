@@ -202,8 +202,10 @@ class DepthPyrConv(Module):
                     height2 = levels_array[3 * j + 2]
                     size2 = int(np.ceil(width2 * height2 * self.in_img_pyr.channels))
 
-                    #div_conv[:, i] = size  # in*num_lvl+out
-                    #div_conv[:, i] = np.sqrt(size)  # in*num_lvl+out
+                    #div_conv[:, i] = size2  # in*num_lvl+out
+                    #div_conv[:, i] = np.sqrt(size2)  # in*num_lvl+out
+                    #div_conv[i, :] = np.sqrt(size1)  # in*num_lvl+out
+                    #div_conv[i, :] = size1  # in*num_lvl+out
                     #div_conv[:, i] = 1
                     if size1>=size2:
                         div_conv[i, j] = size1/size2
