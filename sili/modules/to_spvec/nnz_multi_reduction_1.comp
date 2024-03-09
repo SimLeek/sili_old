@@ -12,12 +12,16 @@
     if(gl_WorkGroupSize.x>=2) shared_array[id] += shared_array[id+1]; \
 } while(false)
 
-layout(set = 0, binding = 0) buffer Loss {
-    float reduction_io[];
+layout(std430, binding = 0) buffer Input {
+    float reduction_input[];
+};
+
+layout(std430, binding = 1) buffer Output {
+    float reduction_output[];
 };
 
 layout (local_size_x_id = 0) in;
-layout(constant_id = 1) const uint full_size = 1024;  //should be equal to total
+layout(constant_id = 1) const uint full_size = 1024;  //should be equal to levels
 
 shared float shared_loss[int(gl_WorkGroupSize.x*2)]; // I think this should be shared_loss[shared_memory_size]
 
@@ -26,10 +30,17 @@ void main() {
     uint index = gl_WorkGroupSize.x*2*gl_WorkGroupID.x+gl_LocalInvocationID.x;
     uint local_index = gl_LocalInvocationID.x;
     uint gridSize = gl_WorkGroupSize.x*2*gl_NumWorkGroups.x;
-    shared_loss[local_index] = 2.0;
+    shared_loss[local_index] = 0.0;
 
     while(index<full_size){
-        shared_loss[local_index] += reduction_io[index] + reduction_io[index+gl_WorkGroupSize.x];
+        int first_nnz = 0;
+        if(reduction_input[index]!=0){
+            first_nnz+=1;
+        }
+        if(reduction_input[index+gl_WorkGroupSize.x]!=0){
+            first_nnz+=1;
+        }
+        shared_loss[local_index] += first_nnz;
         index += gridSize;
     }
     // Synchronize threads within workgroup
@@ -65,7 +76,8 @@ void main() {
     }
 
     // Write total to global memory for each workgroup
+    // +1 so the first index can be the total while leaving these alone
     if (local_index == 0) {
-        reduction_io[gl_WorkGroupID.x] = shared_loss[0];
+        reduction_io[gl_WorkGroupID.x+1] = shared_loss[0];
     }
 }

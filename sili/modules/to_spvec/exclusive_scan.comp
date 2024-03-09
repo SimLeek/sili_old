@@ -1,0 +1,17 @@
+#version 450
+
+layout(std430, binding = 0) buffer Input {
+    uint scan_io[];
+};
+
+layout (local_size_x_id = 0) in;
+layout(constant_id = 1) const uint in_start_index = 1024;
+layout(constant_id = 2) const uint out_start_index = 1024; // could be 0 for total output, or same as in_start for more reductions
+layout(constant_id = 3) const uint full_size = 1024;  //should be equal to total of the specific region we're reducing
+
+shared uint shared_loss[int(gl_WorkGroupSize.x*2)]; // I think this should be shared_loss[shared_memory_size]
+
+
+void main() {
+    //try copy from here: https://github.com/mmaldacker/VulkanSubgroups/blob/master/Scan.comp
+}

@@ -12,12 +12,14 @@
     if(gl_WorkGroupSize.x>=2) shared_array[id] += shared_array[id+1]; \
 } while(false)
 
-layout(set = 0, binding = 0) buffer Loss {
+layout(std430, binding = 0) buffer Input {
     float reduction_io[];
 };
 
 layout (local_size_x_id = 0) in;
-layout(constant_id = 1) const uint full_size = 1024;  //should be equal to total
+layout(constant_id = 1) const uint in_start_index = 1024;
+layout(constant_id = 2) const uint out_start_index = 1024; // could be 0 for total output, or same as in_start for more reductions
+layout(constant_id = 3) const uint full_size = 1024;  //should be equal to total of the specific region we're reducing
 
 shared float shared_loss[int(gl_WorkGroupSize.x*2)]; // I think this should be shared_loss[shared_memory_size]
 
@@ -26,10 +28,10 @@ void main() {
     uint index = gl_WorkGroupSize.x*2*gl_WorkGroupID.x+gl_LocalInvocationID.x;
     uint local_index = gl_LocalInvocationID.x;
     uint gridSize = gl_WorkGroupSize.x*2*gl_NumWorkGroups.x;
-    shared_loss[local_index] = 2.0;
+    shared_loss[local_index] = 0.0;
 
     while(index<full_size){
-        shared_loss[local_index] += reduction_io[index] + reduction_io[index+gl_WorkGroupSize.x];
+        shared_loss[local_index] += reduction_io[in_start_index+index] + reduction_io[in_start_index+index+gl_WorkGroupSize.x];
         index += gridSize;
     }
     // Synchronize threads within workgroup
@@ -65,7 +67,8 @@ void main() {
     }
 
     // Write total to global memory for each workgroup
+    // +1 so the first index can be the total while leaving these alone
     if (local_index == 0) {
-        reduction_io[gl_WorkGroupID.x] = shared_loss[0];
+        reduction_io[out_start_index+gl_WorkGroupID.x] = shared_loss[0];
     }
 }

@@ -1,5 +1,9 @@
 # todo
 
+* io checker
+  * certain modules require I/O. Trigger an error if the I/O is not called either 
+    * on setup
+    * every pipeline run
 * convs
   * Get 1x3 and 3x1 convs working in another example
   * get sparsity loss working in an example
