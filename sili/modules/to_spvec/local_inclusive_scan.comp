@@ -1,0 +1,100 @@
+#version 450
+
+// From here: https://github.com/nvpro-samples/gl_occlusion_culling/blob/master/scan.comp.glsl
+// Making this file Apache 2.0 License
+
+layout(std430, binding = 0) buffer Input {
+    uint scan_io[];
+};
+
+layout (local_size_x_id = 0) in;
+layout(constant_id = 1) const uint numel = 1024;  //should be equal to total of the specific region we're reducing
+layout(constant_id = 2) const uint in_start_index = 0;
+layout(constant_id = 3) const uint out_start_index = 0; // could be 0 for total output, or same as in_start for more reductions
+
+shared uint s_Data[gl_WorkGroupSize.x * 2];
+
+uint scan1Inclusive(uint idata, uint size)
+{
+    uint pos = 2 * gl_LocalInvocationID.x - (gl_LocalInvocationID.x & (size - 1));
+    s_Data[pos] = 0;
+    pos += size;
+    s_Data[pos] = idata;
+
+    for (uint offset = 1; offset < size; offset <<= 1)
+    {
+        memoryBarrierShared();
+        barrier();
+        uint t = s_Data[pos] + s_Data[pos - offset];
+        memoryBarrierShared();
+        barrier();
+        s_Data[pos] = t;
+    }
+
+    return s_Data[pos];
+}
+
+uint scan1Exclusive(uint idata, uint size)
+{
+    return scan1Inclusive(idata, size) - idata;
+}
+
+uvec4 scan4Inclusive(uvec4 idata4, uint size)
+{
+    //Level-0 inclusive scan
+    idata4.y += idata4.x;
+    idata4.z += idata4.y;
+    idata4.w += idata4.z;
+
+    //Level-1 exclusive scan
+    uint oval = scan1Exclusive(idata4.w, size / 4);
+
+    idata4.x += oval;
+    idata4.y += oval;
+    idata4.z += oval;
+    idata4.w += oval;
+
+    return idata4;
+}
+
+//Exclusive vector scan: the array to be scanned is stored
+//in local thread memory scope as uint4
+uvec4 scan4Exclusive(uvec4 idata4, uint size)
+{
+    uvec4 odata4 = scan4Inclusive(idata4, size);
+    odata4.x -= idata4.x;
+    odata4.y -= idata4.y;
+    odata4.z -= idata4.z;
+    odata4.w -= idata4.w;
+    return odata4;
+}
+
+void main()
+{
+  uint idx = in_start_index+gl_GlobalInvocationID.x;
+  uint startIdx = (idx * gl_WorkGroupSize.x*4 * 4);
+
+  bool valid = false;
+
+  //Load data
+  uvec4 idata4 = uvec4(0);
+  for (uint i = 0; i < 4; i++){
+    uint readIdx = startIdx + (i+1)*gl_WorkGroupSize.x*4 - 1u;
+    if ( readIdx < numel+in_start_index ){
+      idata4[i] = scan_io[readIdx];
+      valid = true;
+    }
+  }
+
+  //Calculate scan
+  uvec4 odata4 = scan4Inclusive(idata4, gl_WorkGroupSize.x*4);
+
+  //Write back
+  if (valid){
+      uint idx_out = idx-in_start_index+out_start_index;
+      scan_io[idx_out*4] = odata4.x;
+      scan_io[idx_out*4+1] = odata4.y;
+      scan_io[idx_out*4+2] = odata4.z;
+      scan_io[idx_out*4+3] = odata4.w;
+  }
+}

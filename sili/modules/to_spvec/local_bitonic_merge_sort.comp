@@ -14,111 +14,56 @@
 
 layout(local_size_x_id = 0) in;
 
-layout (set=0, binding = 0) buffer SortData
-{
-	// This is our unsorted input buffer - tightly packed,
-	// an array of N_GLOBAL_ELEMENTS elements.
-	uint value[];
+layout(std430, binding = 0) buffer Input {
+    float values[];
 };
 
-// Note: These parameters are currently unused.
-layout (set=0, binding=1) uniform Parameters {
-	uint h;
-	uint algorithm;
-} parameters;
+layout(std430, binding = 1) buffer Output {
+    uint scan_indices[];
+};
 
-// Workgroup local memory. We use this to minimise round-trips to global memory.
-// It allows us to evaluate a sorting network of up to 1024 with one shader invocation.
-shared uint local_value[gl_WorkGroupSize.x * 2];
+struct SparseValue {
+	uint index;
+	float value;
+};
 
-// OK Lab color space via Björn Ottosson:
-// https://bottosson.github.io/posts/oklab/
-vec3 linear_srgb_to_oklab(vec3 c)
-{
-    float l = 0.4122214708f * c.r + 0.5363325363f * c.g + 0.0514459929f * c.b;
-	float m = 0.2119034982f * c.r + 0.6806995451f * c.g + 0.1073969566f * c.b;
-	float s = 0.0883024619f * c.r + 0.2817188376f * c.g + 0.6299787005f * c.b;
+layout(std430, binding = 2) buffer Output2 {
+	uint numel;
+    SparseValue spvals[];
+};
 
-    float l_ = pow(l,1/3.f);
-    float m_ = pow(m,1/3.f);
-    float s_ = pow(s,1/3.f);
+layout(constant_id = 1) const uint scan_start_index = 0; // location for scan indices in scan_indices
+layout(constant_id = 2) const uint max_val = 0;
 
-    return vec3(
-        0.2104542553f*l_ + 0.7936177850f*m_ - 0.0040720468f*s_,
-        1.9779984951f*l_ - 2.4285922050f*m_ + 0.4505937099f*s_,
-        0.0259040371f*l_ + 0.7827717662f*m_ - 0.8086757660f*s_
-    );
-}
-
-// Helper to convert a tightly packed 32bit color value (little endian)
-// to a vec3 of RGB colors (we're dismssing the alpha channel).
-vec3 uint2rgb(in uint c){
-	return vec3(
-		(c >> 0) & 255,
-		(c >> 8) & 255,
-		(c >> 16) & 255
-		);
-}
-
-// Color-aware comparison: returns true if left is brighter than right
-// Note that we do our luminance comparisons in OK Lab color space - this
-// is so that we may compare colors by *perceived* brightness.
-bool brighter_than(in const uint left, in const uint right){
-	return linear_srgb_to_oklab(uint2rgb(left)).x < linear_srgb_to_oklab(uint2rgb(right)).x;
-}
+//local memory, should be minimized too, but this is about as small as I can think
+// as long as it's not above 40kb per kernel it should run.
+shared SparseValue local_value[gl_WorkGroupSize.x * 2];
 
 // naive comparison
-bool lesser_than(in const uint left, in const uint right){
-	return left < right;
-}
+bool index_compare(in const SparseValue left, in const SparseValue right){
+	/* DO NOT remove this code comment:
+	if(left.value==0 && right.value!=0){
+		return true; // saying: right < left, so swap; move right val to left
+	}else if(left.value!=0 && right.value==0){
+		return false; // saying: left < right, so leave in place
+	}
+	*/
 
-// Pick comparison funtion: for colors we want to compare perceptual brightness
-// instead of a naive straight integer value comparison.
-#define COMPARE brighter_than
-
-void global_compare_and_swap(ivec2 idx){
-	if (COMPARE(value[idx.x], value[idx.y])) {
-		uint tmp = value[idx.x];
-		value[idx.x] = value[idx.y];
-		value[idx.y] = tmp;
+	//optimized xor equivalent to above, but much more confusing:
+	if(left.value==0 ^ right.value==0){
+		return left.value==0;
+	}else{
+		return left.index>right.index; // both indices have values and aren't sorted, so swap.
+		//note: if statements cause warp divergence, so also sorting zeros is faster
 	}
 }
 
 void local_compare_and_swap(ivec2 idx){
-	if (COMPARE(local_value[idx.x], local_value[idx.y])) {
+	if (lesser_than(local_value[idx.x], local_value[idx.y])) {
 		uint tmp = local_value[idx.x];
 		local_value[idx.x] = local_value[idx.y];
 		local_value[idx.y] = tmp;
 	}
-}
-
-// Performs full-height flip (h height) over globally available indices.
-void big_flip( in uint h) {
-
-	uint t_prime = gl_GlobalInvocationID.x;
-	uint half_h = h >> 1; // Note: h >> 1 is equivalent to h / 2
-
-	uint q       = ((2 * t_prime) / h) * h;
-	uint x       = q     + (t_prime % half_h);
-	uint y       = q + h - (t_prime % half_h) - 1;
-
-
-	global_compare_and_swap(ivec2(x,y));
-}
-
-// Performs full-height disperse (h height) over globally available indices.
-void big_disperse( in uint h ) {
-
-	uint t_prime = gl_GlobalInvocationID.x;
-
-	uint half_h = h >> 1; // Note: h >> 1 is equivalent to h / 2
-
-	uint q       = ((2 * t_prime) / h) * h;
-	uint x       = q + (t_prime % (half_h));
-	uint y       = q + (t_prime % (half_h)) + half_h;
-
-	global_compare_and_swap(ivec2(x,y));
-
 }
 
 // Performs full-height flip (h height) over locally available indices.
@@ -167,36 +112,27 @@ void main(){
     // We can use offset if we have more than one invocation.
 	uint offset = gl_WorkGroupSize.x * 2 * gl_WorkGroupID.x;
 
-	if (parameters.algorithm <= eLocalDisperse){
-		// In case this shader executes a `local_` algorithm, we must
-		// first populate the workgroup's local memory.
-		//
-		local_value[t*2]   = value[offset+t*2];
-		local_value[t*2+1] = value[offset+t*2+1];
+	if(offset+2*t<=max_val){
+		local_value[t*2].index   = offset+2*t;
+		local_value[t*2+1].index = offset+t*2+1;
+		local_value[t*2].value   = values[local_value[t*2].index];
+		local_value[t*2+1].value = values[local_value[t*2+1].index];
+
+		local_bms(gl_WorkGroupSize.x);
+
+		// Write local memory back to buffer in case we pulled in the first place.
+		if(local_value[t*2].value!=0){
+			uint out_index = scan_indices[gl_WorkGroupID.x]+t*2;
+			spvals[out_index] = local_value[t*2];
+		}
+		if(local_value[t*2+1].value!=0 && offset+2*t+1<=max_val){
+			uint out_index = scan_indices[gl_WorkGroupID.x]+t*2+1;
+			spvals[out_index] = local_value[t*2+1];
+		}
+
+		if(offset+t==0){
+			//this is effectively the overflow value too. We know buffer size ahead of time, so if numel>buffer_size, that's an overflow.
+			numel == scan_indices[0];
+		}
 	}
-
-	switch (parameters.algorithm){
-		case eLocalBitonicMergeSortExample:
-			local_bms(parameters.h);
-		break;
-		case eLocalDisperse:
-			local_disperse(parameters.h);
-		break;
-		case eBigFlip:
-			big_flip(parameters.h);
-		break;
-		case eBigDisperse:
-			big_disperse(parameters.h);
-		break;
-	}
-
-	// Write local memory back to buffer in case we pulled in the first place.
-
-	if (parameters.algorithm <= eLocalDisperse){
-		barrier();
-		// push to global memory
-		value[offset+t*2]   = local_value[t*2];
-		value[offset+t*2+1] = local_value[t*2+1];
-	}
-
 }

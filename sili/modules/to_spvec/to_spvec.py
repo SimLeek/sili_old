@@ -12,6 +12,15 @@ from sili.modules.base import Module
 file_path = os.path.dirname(os.path.abspath(__file__))
 
 
+# note, forward shader order is:
+# 	nnz_multi_reduction_1
+#   nnz_multi_reduction_2
+#   local_inclusive_scan
+#   nonlocal_exclusive_scan
+#   broadcast_array_add
+#   local_bitonic_merge_sort
+
+
 class ToSpVec(Module):
     def __init__(self,
                  gpu: GPUManager,
