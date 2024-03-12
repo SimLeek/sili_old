@@ -116,7 +116,6 @@ class ToSpVec(Module):
             self.forward_shader_1 = get_shader(file_path + os.sep + 'nnz_multi_reduction_1.comp')
             self.forward_shader_2 = get_shader(file_path + os.sep + 'nnz_multi_reduction_2.comp')
             self.forward_shader_3 = get_shader(file_path + os.sep + 'local_inclusive_scan.comp')
-            self.forward_shader_4 = get_shader(file_path + os.sep + 'nonlocal_exclusive_scan.comp')
 
             # PIPELINE OBJECTS:
             # FORWARD
@@ -180,20 +179,6 @@ class ToSpVec(Module):
                 spirv=self.forward_shader_3,
                 workgroup=[initial_reduced_size_2, 0, 0],
                 spec_consts=np.asarray([div, initial_reduced_size, 1, 1],
-                                       dtype=np.uint32).view(np.float32)
-            ))
-
-            # todo: loop this for orders of magnitude of max_workgroup_invocations
-            # TODO: FIX. last array is less than initial_div. Need remainder.
-            in_start_idx = 1+ (div-1)
-            out_start_idx = initial_reduced_size+1
-            div = min(initial_reduced_size_2, self.gpu.max_workgroup_invocations)
-            reduce_size_3 = int(np.ceil(initial_reduced_size_2 / div))
-            self.forward_algorithms.append(self.gpu.manager.algorithm(
-                [self.spvec_io.buffer],
-                spirv=self.forward_shader_4,
-                workgroup=[reduce_size_3, 0, 0],
-                spec_consts=np.asarray([div, initial_reduced_size, initial_div, in_start_idx, out_start_idx],
                                        dtype=np.uint32).view(np.float32)
             ))
 

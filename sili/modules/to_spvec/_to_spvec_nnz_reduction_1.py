@@ -36,7 +36,7 @@ class SparseVectorBuffer(object):
 
     def __setstate__(self, state):
         self.max_nnz, self.dense_len = state[:3]
-        self.nnz = int(np.frombuffer(self.buffer.data()[:1], dtype=np.uint32))  # assuming uint32
+        self.nnz = int.from_bytes(state[3][:1], signed=False)  # assuming uint32
         # Restore the buffer from serialized data
         dtype = np.dtype([('ch1',np.uint32), ('ch2', np.float32)])
         self.buffer = deserialize_buffer(state[3][1:]).view(dtype)
@@ -52,7 +52,7 @@ class SparseVectorBuffer(object):
     def set(self, nnz:int, array:np.ndarray):
         if isinstance(array, np.ndarray):
             self.nnz = nnz
-            (self.buffer.data()[:1]).frombytes(np.asarray([self.nnz], dtype=np.uint32).tobytes())
+            (self.buffer.data()[:1]).frombytes(self.nnz.to_bytes(length=4, signed=False))
             self.buffer.data()[1:] = array.flatten()
         else:
             raise NotImplementedError(f'sorry, idk wtf this is: {type(array)}')
@@ -60,7 +60,7 @@ class SparseVectorBuffer(object):
     def get(self):
         dtype = np.dtype([('ch1',np.uint32), ('ch2', np.float32)])
         return [
-            int(np.frombuffer(self.buffer.data()[:1], dtype=np.uint32)),
+            int.from_bytes(self.buffer.data()[:1], signed=False),
             self.buffer.data()[1:].astype(dtype)
         ]
 
@@ -114,9 +114,6 @@ class ToSpVec(Module):
 
         if forward:
             self.forward_shader_1 = get_shader(file_path + os.sep + 'nnz_multi_reduction_1.comp')
-            self.forward_shader_2 = get_shader(file_path + os.sep + 'nnz_multi_reduction_2.comp')
-            self.forward_shader_3 = get_shader(file_path + os.sep + 'local_inclusive_scan.comp')
-            self.forward_shader_4 = get_shader(file_path + os.sep + 'nonlocal_exclusive_scan.comp')
 
             # PIPELINE OBJECTS:
             # FORWARD
@@ -136,64 +133,6 @@ class ToSpVec(Module):
                 spirv=self.forward_shader_1,
                 workgroup=[reduced_size, 0, 0],
                 spec_consts=np.asarray([min(self.dense_len, self.gpu.max_workgroup_invocations), self.dense_len],
-                                       dtype=np.uint32).view(np.float32)
-            ))
-
-            initial_reduced_size = reduced_size
-            initial_div = min(reduced_size, self.gpu.max_workgroup_invocations)
-
-            div = initial_div
-            reduced_size_2 = int(np.ceil(reduced_size / div))
-            initial_reduced_size_2 = reduced_size_2
-            out_loc = 1+reduced_size
-            in_loc = 1
-            while True:
-                if reduced_size_2==1:
-                    out_loc = 0
-                    self.forward_algorithms.append(self.gpu.manager.algorithm(
-                        [self.spvec_io.buffer],
-                        spirv=self.forward_shader_2,
-                        workgroup=[reduced_size_2, 0, 0],
-                        spec_consts=np.asarray(
-                            [div, in_loc, out_loc, reduced_size],
-                            dtype=np.uint32).view(np.float32)
-                    ))
-                    break
-                else:
-                    # out_loc += reduced_size
-                    self.forward_algorithms.append(self.gpu.manager.algorithm(
-                        [self.spvec_io.buffer],
-                        spirv=self.forward_shader_2,
-                        workgroup=[reduced_size_2, 0, 0],
-                        spec_consts=np.asarray(
-                            [div, in_loc, out_loc, reduced_size],
-                            dtype=np.uint32).view(np.float32)
-                    ))
-                    in_loc=out_loc
-                    reduced_size = reduced_size_2
-                    div = min(reduced_size, self.gpu.max_workgroup_invocations)
-                    reduced_size_2 = int(np.ceil(reduced_size / div))
-
-            div = min(initial_reduced_size, self.gpu.max_workgroup_invocations)
-            self.forward_algorithms.append(self.gpu.manager.algorithm(
-                [self.spvec_io.buffer],
-                spirv=self.forward_shader_3,
-                workgroup=[initial_reduced_size_2, 0, 0],
-                spec_consts=np.asarray([div, initial_reduced_size, 1, 1],
-                                       dtype=np.uint32).view(np.float32)
-            ))
-
-            # todo: loop this for orders of magnitude of max_workgroup_invocations
-            # TODO: FIX. last array is less than initial_div. Need remainder.
-            in_start_idx = 1+ (div-1)
-            out_start_idx = initial_reduced_size+1
-            div = min(initial_reduced_size_2, self.gpu.max_workgroup_invocations)
-            reduce_size_3 = int(np.ceil(initial_reduced_size_2 / div))
-            self.forward_algorithms.append(self.gpu.manager.algorithm(
-                [self.spvec_io.buffer],
-                spirv=self.forward_shader_4,
-                workgroup=[reduce_size_3, 0, 0],
-                spec_consts=np.asarray([div, initial_reduced_size, initial_div, in_start_idx, out_start_idx],
                                        dtype=np.uint32).view(np.float32)
             ))
 

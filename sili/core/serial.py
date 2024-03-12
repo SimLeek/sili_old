@@ -12,6 +12,6 @@ def serialize_buffer(buf):
     return bytes_io
 
 
-def deserialize_buffer( buf):
+def deserialize_buffer( buf) ->np.ndarray:
     buffer = np.load(buf, allow_pickle=False)['data']
     return buffer

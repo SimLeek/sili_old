@@ -72,29 +72,12 @@ uvec4 scan4Exclusive(uvec4 idata4, uint size)
 void main()
 {
   uint idx = in_start_index+gl_GlobalInvocationID.x;
-  uint startIdx = (idx * gl_WorkGroupSize.x*4 * 4);
+  if ( idx < numel+in_start_index ) {
+      //Calculate scan
+      uint odata = scan1Inclusive(scan_io[idx], gl_WorkGroupSize.x);
 
-  bool valid = false;
-
-  //Load data
-  uvec4 idata4 = uvec4(0);
-  for (uint i = 0; i < 4; i++){
-    uint readIdx = startIdx + (i+1)*gl_WorkGroupSize.x*4 - 1u;
-    if ( readIdx < numel+in_start_index ){
-      idata4[i] = scan_io[readIdx];
-      valid = true;
-    }
-  }
-
-  //Calculate scan
-  uvec4 odata4 = scan4Inclusive(idata4, gl_WorkGroupSize.x*4);
-
-  //Write back
-  if (valid){
-      uint idx_out = idx-in_start_index+out_start_index;
-      scan_io[idx_out*4] = odata4.x;
-      scan_io[idx_out*4+1] = odata4.y;
-      scan_io[idx_out*4+2] = odata4.z;
-      scan_io[idx_out*4+3] = odata4.w;
+      //Write back
+      uint idx_out = idx - in_start_index + out_start_index;
+      scan_io[idx_out] = odata;
   }
 }
