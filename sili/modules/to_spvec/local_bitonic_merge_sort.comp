@@ -50,7 +50,7 @@ bool index_compare(in const SparseValue left, in const SparseValue right){
 	*/
 
 	//optimized xor equivalent to above, but much more confusing:
-	if(left.value==0 ^ right.value==0){
+	if((left.value==0) != (right.value==0)){
 		return left.value==0;
 	}else{
 		return left.index>right.index; // both indices have values and aren't sorted, so swap.
@@ -59,8 +59,8 @@ bool index_compare(in const SparseValue left, in const SparseValue right){
 }
 
 void local_compare_and_swap(ivec2 idx){
-	if (lesser_than(local_value[idx.x], local_value[idx.y])) {
-		uint tmp = local_value[idx.x];
+	if (index_compare(local_value[idx.x], local_value[idx.y])) {
+		SparseValue tmp = local_value[idx.x];
 		local_value[idx.x] = local_value[idx.y];
 		local_value[idx.y] = tmp;
 	}
@@ -106,11 +106,15 @@ void local_bms(uint h){
 }
 
 void main(){
+	if(gl_GlobalInvocationID.x==0){
+		//this is effectively the overflow value too. We know buffer size ahead of time, so if numel>buffer_size, that's an overflow.
+		numel = scan_indices[0];
+	}
 
-	uint t = gl_LocalInvocationID.x;
+	uint t = gl_LocalInvocationID.x ;
 
     // We can use offset if we have more than one invocation.
-	uint offset = gl_WorkGroupSize.x * 2 * gl_WorkGroupID.x;
+	uint offset = gl_WorkGroupSize.x * gl_WorkGroupID.x;
 
 	if(offset+2*t<=max_val){
 		local_value[t*2].index   = offset+2*t;
@@ -121,18 +125,20 @@ void main(){
 		local_bms(gl_WorkGroupSize.x);
 
 		// Write local memory back to buffer in case we pulled in the first place.
+		uint scan_index;
+		if(gl_WorkGroupID.x!=0) {
+			scan_index = scan_indices[gl_WorkGroupID.x + scan_start_index - 1];
+		}else{
+			scan_index = 0;
+		}
 		if(local_value[t*2].value!=0){
-			uint out_index = scan_indices[gl_WorkGroupID.x]+t*2;
+			uint out_index = scan_index+t*2;
 			spvals[out_index] = local_value[t*2];
 		}
 		if(local_value[t*2+1].value!=0 && offset+2*t+1<=max_val){
-			uint out_index = scan_indices[gl_WorkGroupID.x]+t*2+1;
+			uint out_index = scan_index+t*2+1;
 			spvals[out_index] = local_value[t*2+1];
 		}
-
-		if(offset+t==0){
-			//this is effectively the overflow value too. We know buffer size ahead of time, so if numel>buffer_size, that's an overflow.
-			numel == scan_indices[0];
-		}
+		
 	}
 }

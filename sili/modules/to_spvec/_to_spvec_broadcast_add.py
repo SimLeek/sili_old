@@ -1,5 +1,3 @@
-import time
-
 import kp
 import numpy as np
 from displayarray import DirectDisplay
@@ -63,7 +61,7 @@ class SparseVectorBuffer(object):
         dtype = np.dtype([('ch1',np.uint32), ('ch2', np.float32)])
         return [
             int(np.frombuffer(self.buffer.data()[:1], dtype=np.uint32)),
-            self.buffer.data()[1:].view(dtype),
+            self.buffer.data()[1:].astype(dtype)
         ]
 
 class ToSpVec(Module):
@@ -71,7 +69,6 @@ class ToSpVec(Module):
                  gpu: GPUManager,
                  vec_io: kp.Tensor,
                  spvec_io = None,  # type: Union[SparseVectorBuffer, int]
-                 intermediate_io: kp.Tensor = None,
                  dense_len: int = None,  # for buffers used for multiple things
                  forward=True,
                  backprop=False
@@ -89,11 +86,6 @@ class ToSpVec(Module):
             raise TypeError("vec_io Buffer must be a buffer attached to a device")
         else:
             self.vec_io = vec_io
-
-        if not isinstance(intermediate_io, kp.Tensor):
-            self.intermediate_io = None
-        else:
-            self.intermediate_io = intermediate_io
 
         self.dense_len = dense_len if dense_len is not None else self.vec_io.size()
 
@@ -114,9 +106,7 @@ class ToSpVec(Module):
                 break
             else:
                 min_len+=add
-        if self.intermediate_io is None:
-            self.intermediate_io = self.gpu.manager.tensor(np.zeros([min_len]))
-        elif self.intermediate_io.size() < min_len:
+        if self.spvec_io.buffer.size() < min_len:
             # note: you could use an intermediate vector... but there's really no point.
             #  It would just waste data since you could use it for the nnz buffer.
             raise TypeError(f"sparse vector isn't large enough to store intermediate sparsity calcualtion from full lendth vector. "
@@ -128,13 +118,12 @@ class ToSpVec(Module):
             self.forward_shader_3 = get_shader(file_path + os.sep + 'local_inclusive_scan.comp')
             self.forward_shader_4 = get_shader(file_path + os.sep + 'nonlocal_exclusive_scan.comp')
             self.forward_shader_5 = get_shader(file_path + os.sep + 'broadcast_array_add.comp')
-            self.forward_shader_6 = get_shader(file_path + os.sep + 'local_bitonic_merge_sort.comp')
 
             # PIPELINE OBJECTS:
             # FORWARD
             # these need to be accessible so that kompute can record input/output for pipelines
             self.forward_input_buffers = [self.vec_io]
-            self.forward_output_buffers = [self.intermediate_io, self.spvec_io.buffer]
+            self.forward_output_buffers = [self.spvec_io.buffer]
 
             # Note: I'm not going to sum the error into one number. It's kinda useful, but it costs a bit and you can do
             # that with a reduction op anywhere. Leaving it like this gives us options for nice error images, while
@@ -144,7 +133,7 @@ class ToSpVec(Module):
             self.forward_algorithms = []
             reduced_size = int(np.ceil(self.dense_len / min(self.dense_len, self.gpu.max_workgroup_invocations)))
             self.forward_algorithms.append(self.gpu.manager.algorithm(
-                [self.vec_io, self.intermediate_io],
+                [self.vec_io, self.spvec_io.buffer],
                 spirv=self.forward_shader_1,
                 workgroup=[reduced_size, 0, 0],
                 spec_consts=np.asarray([min(self.dense_len, self.gpu.max_workgroup_invocations), self.dense_len],
@@ -163,7 +152,7 @@ class ToSpVec(Module):
                 if reduced_size_2==1:
                     out_loc = 0
                     self.forward_algorithms.append(self.gpu.manager.algorithm(
-                        [self.intermediate_io],
+                        [self.spvec_io.buffer],
                         spirv=self.forward_shader_2,
                         workgroup=[reduced_size_2, 0, 0],
                         spec_consts=np.asarray(
@@ -174,7 +163,7 @@ class ToSpVec(Module):
                 else:
                     # out_loc += reduced_size
                     self.forward_algorithms.append(self.gpu.manager.algorithm(
-                        [self.intermediate_io],
+                        [self.spvec_io.buffer],
                         spirv=self.forward_shader_2,
                         workgroup=[reduced_size_2, 0, 0],
                         spec_consts=np.asarray(
@@ -188,7 +177,7 @@ class ToSpVec(Module):
 
             div = min(initial_reduced_size, self.gpu.max_workgroup_invocations)
             self.forward_algorithms.append(self.gpu.manager.algorithm(
-                [self.intermediate_io],
+                [self.spvec_io.buffer],
                 spirv=self.forward_shader_3,
                 workgroup=[initial_reduced_size_2, 0, 0],
                 spec_consts=np.asarray([div, initial_reduced_size, 1, 1],
@@ -204,7 +193,7 @@ class ToSpVec(Module):
             reduce_size_3 = int(np.ceil(initial_reduced_size_2 / div))
             final_index = initial_reduced_size
             self.forward_algorithms.append(self.gpu.manager.algorithm(
-                [self.intermediate_io],
+                [self.spvec_io.buffer],
                 spirv=self.forward_shader_4,
                 workgroup=[reduce_size_3, 0, 0],
                 spec_consts=np.asarray([div, initial_reduced_size, initial_div, in_start_idx, out_start_idx, final_index],
@@ -212,22 +201,11 @@ class ToSpVec(Module):
             ))
 
             self.forward_algorithms.append(self.gpu.manager.algorithm(
-                [self.intermediate_io],
+                [self.spvec_io.buffer],
                 spirv=self.forward_shader_5,
                 workgroup=[initial_reduced_size_2, 0, 0],
                 spec_consts=np.asarray(
                     [in_start_idx, initial_reduced_size, in_start_idx, 1, out_start_idx],
-                    dtype=np.uint32).view(np.float32)
-            ))
-
-            # note: intermediate_io and spvec_io should be seperate since intermediate_io has 1 index for every ~1000
-            # indices in spvec_io, and would eventually overwrite what it's reading in that shader
-            self.forward_algorithms.append(self.gpu.manager.algorithm(
-                [self.vec_io, self.intermediate_io, self.spvec_io.buffer],
-                spirv=self.forward_shader_6,
-                workgroup=[initial_reduced_size, 0, 0],
-                spec_consts=np.asarray(
-                    [in_start_idx, 1, self.dense_len],
                     dtype=np.uint32).view(np.float32)
             ))
 
@@ -288,15 +266,10 @@ if __name__ == '__main__':
     in_buf = gpu.buffer(in_array)
     to_spv = ToSpVec(gpu, in_buf, 10000)
 
-    indices = np.random.choice(2_000_000, 100)
+    indices = np.random.choice(2_000_000, 9999)
     in_buf.data()[indices] = 1.0
     in_buf.data()[0] = 1.0
-    t1 = time.time()
     to_spv.basic_forward()
-    t2 = time.time()
-
-    # todo: BUG. fix bug where the 0 indicies aren't in the right spot with ~9999 indices, or near full
-    print(f"execution time = {t2-t1}, or {1/(t2-t1)} fps")
     print(to_spv.spvec_io.get()[1].view(np.uint32))
 
     # im_pyr = pyr.run_basic_forward_sequence(im)
