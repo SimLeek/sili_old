@@ -1,5 +1,9 @@
 # todo
 
+* 2d convs
+  * I've determined center-surround edge detectors aren't seperable to 2 1D edge detectors
+  * kernel indexing should use scalines+sub-scanlines so that 2D grid sections (32*32 for 1024 workgroup gpu) are in cache memory while remaining space can be used by the else part of an if-else statement (pseudocode on whiteboard)
+  * GPU workgroup sizes should be divided into X,Y; X,Y,Z; X,Y,Z,T; etc., using the knapsack problem to get 2 T, then 2 Y, then X, then Z. There will be 2^(D-2) solutions for D dimensions, which need to be compared. 
 * io checker
   * certain modules require I/O. Trigger an error if the I/O is not called either 
     * on setup
