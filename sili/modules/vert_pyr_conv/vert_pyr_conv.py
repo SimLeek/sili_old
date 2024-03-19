@@ -44,10 +44,34 @@ def calc_pyr_reduce_buf_size(levels, workgroup_size, channels = 3):
         total_size += int(np.ceil(width*height*channels/workgroup_size))
     return total_size
 
-class DepthPyrConv(Module):
+def gaussian_kernel(size, sigma):
+    """
+    Generates a 1D Gaussian kernel of a given size and standard deviation (sigma).
+
+    Parameters:
+        size (int): Size of the kernel.
+        sigma (float): Standard deviation of the Gaussian distribution.
+
+    Returns:
+        numpy.ndarray: 1D Gaussian kernel.
+    """
+    indices = np.linspace(-size / 2, size / 2, size)
+
+    kernel = np.exp(-(indices ** 2) / (2 * sigma ** 2))
+
+    # Normalize the kernel
+    kernel /= np.sum(kernel)
+
+    return kernel
+
+class DepthPyrConvVert(Module):
     def __init__(self, gpu: GPUManager, image_pyr: ImagePyramidBuffer, init_conv=None, backprop_input_buf=None,
                  backprop_conv=False):
         """
+        2D color-ignoring convolution, vertical half.
+
+        WARNING: if you're not using this for a gaussian kernel, you're probably using it wrong.
+          Determine if your ideal kernel is separable (rank-1 matrix) before using this module
 
         :param gpu: the GPUManager
         :param image_pyr: Either an ImagePyramidBuffer or a list containing the widths and heights of all images in pyr
@@ -276,7 +300,7 @@ if __name__ == '__main__':
         gpu = GPUManager()
         im_pyr = pickle.load(f).to(gpu)
 
-        pyr = DepthPyrConv(gpu, im_pyr, depth_edge_matrix)
+        pyr = DepthPyrConvVert(gpu, im_pyr, lambda x: gaussian_kernel(x, 3))
         pyr.display_basic_forward_sequence(im_pyr)
 
     #im_pyr = pyr.run_basic_forward_sequence(im)
