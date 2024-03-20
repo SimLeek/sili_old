@@ -9,16 +9,20 @@ layout(std430, binding = 0) buffer Input {
 
 layout (local_size_x_id = 0) in;
 layout(constant_id = 1) const uint numel = 1024;  //should be equal to total of the specific region we're reducing
-layout(constant_id = 2) const uint group_size = 4096;  //should be equal to total of the specific region we're reducing
+layout(constant_id = 2) const uint skip_size = 4096;  //should be equal to total of the specific region we're reducing
 layout(constant_id = 3) const uint group_start_index = 0;
 layout(constant_id = 4) const uint group_add_vals_index = 0; // could be 0 for total output, or same as in_start for more reductions
 
 void main()
 {
     if(gl_GlobalInvocationID.x<numel){
-        uint group_idx = gl_GlobalInvocationID.x/group_size;
+        uint group_idx = gl_GlobalInvocationID.x/ skip_size;
         uint add_val = scan_io[group_add_vals_index+group_idx];
         uint out_idx = group_start_index+gl_GlobalInvocationID.x;
         scan_io[out_idx] += add_val;
+
+        if(group_start_index==1 && gl_GlobalInvocationID.x==numel-1){
+            scan_io[0] = scan_io[out_idx];
+        }
     }
 }

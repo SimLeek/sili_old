@@ -9,12 +9,28 @@ layout(std430, binding = 0) buffer Input {
 
 layout (local_size_x_id = 0) in;
 layout(constant_id = 1) const uint numel = 1024;  //should be equal to total of the specific region we're reducing
-layout(constant_id = 2) const uint group_size = 4096;  //should be equal to total of the specific region we're reducing
+layout(constant_id = 2) const uint skip_size = 4096;  //should be equal to total of the specific region we're reducing
 layout(constant_id = 3) const uint in_start_index = 0;
 layout(constant_id = 4) const uint out_start_index = 0; // could be 0 for total output, or same as in_start for more reductions
-layout(constant_id = 5) const uint final_index = 0; // could be 0 for total output, or same as in_start for more reductions
+layout(constant_id = 5) const uint final_index = 0;
 
-shared uint s_Data[gl_WorkGroupSize.x * 2];
+uint nearestPowerOfTwo(uint x) {
+    //ceil opeartion to nearest 2^x, up to 65536.
+    // 255->256, 256->256, 257->512
+    x = x - 1u;
+    x = x | (x >> 1u);
+    x = x | (x >> 2u);
+    x = x | (x >> 4u);
+    x = x | (x >> 8u);
+    x = x | (x >> 16u);
+    return x + 1u;
+}
+
+#define NEARESTPOW2(x) \
+    ((x - 1u) | ((x - 1u) >> 1u) | ((x - 1u) >> 2u) | ((x - 1u) >> 4u) | ((x - 1u) >> 8u) | ((x - 1u) >> 16u) +1u)
+// same as above but useful for array sizes ^
+
+shared uint s_Data[NEARESTPOW2(gl_WorkGroupSize.x) * 2];
 
 uint scan1Inclusive(uint idata, uint size)
 {
@@ -73,13 +89,14 @@ uvec4 scan4Exclusive(uvec4 idata4, uint size)
 
 void main()
 {
-  uint idx = in_start_index+gl_GlobalInvocationID.x*group_size;
+  uint idx = in_start_index+gl_GlobalInvocationID.x* skip_size;
 
-  if(idx >= numel+1) { // todo: replace with final_in_index
-    idx = final_index;
+    // in case of arrays with lengths that aren't evenly divisible by skip_size, this gets the last element
+  if(idx >= out_start_index) {
+    idx = out_start_index-1;
   }
-  uint odata = scan1Exclusive(scan_io[idx], gl_WorkGroupSize.x);
+  uint odata = scan1Exclusive(scan_io[idx], nearestPowerOfTwo(gl_WorkGroupSize.x));
 
-  uint idx_out = gl_GlobalInvocationID.x + out_start_index;
-  scan_io[idx_out] = odata;
+   uint idx_out = gl_GlobalInvocationID.x + out_start_index;
+   scan_io[idx_out] = odata;
 }

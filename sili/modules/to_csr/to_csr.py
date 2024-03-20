@@ -5,6 +5,7 @@ import numpy as np
 from displayarray import DirectDisplay
 import cv2
 import os
+from operator import mul
 
 from sili.core.buffers import ImageBuffer, ImagePyramidBuffer, calculate_pyramid_levels, ConvDepthBuffer, \
     ConvDepthReductionBuffer
@@ -25,7 +26,6 @@ if TYPE_CHECKING:
 #   nonlocal_exclusive_scan
 #   broadcast_array_add
 #   local_bitonic_merge_sort
-
 
 class SparseCSRBuffer(object):
     def __init__(self, gpu: GPUManager, max_nnz: int, dense_shape: (int, int)):
@@ -76,7 +76,7 @@ class SparseCSRBuffer(object):
 class ToCSR(Module):
     def __init__(self,
                  gpu: GPUManager,
-                 mat_io: kp.Tensor,
+                 mat_io: kp.Tensor,  # todo: grayscale image buffer, mix in dense size
                  dense_size: (int,int),  # for buffers used for multiple things
                  csr_io=None,  # type: Union[SparseCSRBuffer, int]
                  intermediate_io: kp.Tensor = None,
@@ -171,7 +171,7 @@ class ToCSR(Module):
             div = initial_div
             reduced_size_2 = int(np.ceil(reduced_size / div))
             initial_reduced_size_2 = reduced_size_2
-            out_loc = 1 + reduced_size
+            '''out_loc = 1 + reduced_size
             in_loc = 1
             while True:
                 if reduced_size_2 == 1:
@@ -198,7 +198,7 @@ class ToCSR(Module):
                     in_loc = out_loc
                     reduced_size = reduced_size_2
                     div = min(reduced_size, self.gpu.max_workgroup_invocations)
-                    reduced_size_2 = int(np.ceil(reduced_size / div))
+                    reduced_size_2 = int(np.ceil(reduced_size / div))'''
 
             div = min(initial_reduced_size, self.gpu.max_workgroup_invocations)
             self.forward_algorithms.append(self.gpu.manager.algorithm(
@@ -209,40 +209,63 @@ class ToCSR(Module):
                                        dtype=np.uint32).view(np.float32)
             ))
 
-            # todo: loop this for orders of magnitude of max_workgroup_invocations
-            #  this will likely require saving consecutive nnz reduction arrays and scans
-            #  then broadcasting sums back to them level by level
-            in_start_idx = 1 + (div - 1)
-            out_start_idx = initial_reduced_size + 1
-            div = min(initial_reduced_size_2, self.gpu.max_workgroup_invocations)
-            reduce_size_3 = int(np.ceil(initial_reduced_size_2 / div))
-            final_index = initial_reduced_size
-            self.forward_algorithms.append(self.gpu.manager.algorithm(
-                [self.intermediate_io],
-                spirv=self.forward_shader_4,
-                workgroup=[reduce_size_3, 0, 0],
-                spec_consts=np.asarray(
-                    [div, initial_reduced_size, initial_div, in_start_idx, out_start_idx, final_index],
-                    dtype=np.uint32).view(np.float32)
-            ))
+            in_start_indices = [1 + (div - 1)]
+            out_start_indices = [initial_reduced_size + 1]
+            workgroup_sizes = [min(initial_reduced_size, self.gpu.max_workgroup_invocations)]
+            num_workgroups = [int(np.ceil(initial_reduced_size / div))]
+            full_sizes = [initial_reduced_size]
+            skip_sizes = [div]
+            print(in_start_indices, out_start_indices, num_workgroups, workgroup_sizes,
+                  full_sizes, skip_sizes)
+            while True:
+                if num_workgroups[-1]==1:
+                    num_workgroups.pop()
+                    in_start_indices.pop()
+                    out_start_indices.pop()
+                    workgroup_sizes.pop()
+                    full_sizes.pop()
+                    skip_sizes.pop()
+                    break  # this is just the nnz sum, which we've already calculated
+                self.forward_algorithms.append(self.gpu.manager.algorithm(
+                    [self.intermediate_io],
+                    spirv=self.forward_shader_4,
+                    workgroup=[num_workgroups[-1], 0, 0],
+                    spec_consts=np.asarray(
+                        [workgroup_sizes[-1], full_sizes[-1], skip_sizes[-1], in_start_indices[-1], out_start_indices[-1]],
+                        dtype=np.uint32).view(np.float32)
+                ))
 
-            self.forward_algorithms.append(self.gpu.manager.algorithm(
-                [self.intermediate_io],
-                spirv=self.forward_shader_5,
-                workgroup=[initial_reduced_size_2, 0, 0],
-                spec_consts=np.asarray(
-                    [in_start_idx, initial_reduced_size, in_start_idx, 1, out_start_idx],
-                    dtype=np.uint32).view(np.float32)
-            ))
+                full_sizes.append(int(full_sizes[-1]/self.gpu.max_workgroup_invocations))
+                in_start_indices.append(out_start_indices[-1]+skip_sizes[-1]-1)
+                out_start_indices.append(out_start_indices[-1]+full_sizes[-1])
+                num_workgroups.append(int(np.ceil(num_workgroups[-1]/self.gpu.max_workgroup_invocations)))
+                workgroup_sizes.append(int(min(np.ceil(initial_reduced_size/np.prod(workgroup_sizes)), self.gpu.max_workgroup_invocations)))
+                skip_sizes.append(int(min(np.ceil(num_workgroups[-1]/self.gpu.max_workgroup_invocations), self.gpu.max_workgroup_invocations)))
+                print(in_start_indices, out_start_indices, num_workgroups, workgroup_sizes,
+                  full_sizes, skip_sizes)
+
+            for i in reversed(range(len(num_workgroups))):
+                workgroup_size = workgroup_sizes[i-1] if i>0 else self.gpu.max_workgroup_invocations
+                num_workgroup = num_workgroups[i-1] if i>0 else initial_reduced_size_2
+
+                self.forward_algorithms.append(self.gpu.manager.algorithm(
+                    [self.intermediate_io],
+                    spirv=self.forward_shader_5,
+                    workgroup=[num_workgroup, 0, 0],
+                    spec_consts=np.asarray(
+                        [workgroup_size, full_sizes[i], skip_sizes[i], in_start_indices[i]-skip_sizes[i]+1, out_start_indices[i]],
+                        dtype=np.uint32).view(np.float32)
+                ))
 
             # note: intermediate_io and spvec_io should be seperate since intermediate_io has 1 index for every ~1000
             # indices in spvec_io, and would eventually overwrite what it's reading in that shader
+            w_size = min(self.dense_len, self.gpu.max_workgroup_invocations)
             self.forward_algorithms.append(self.gpu.manager.algorithm(
                 [self.mat_io, self.intermediate_io, self.csr_io.buffer],
                 spirv=self.forward_shader_6,
                 workgroup=[initial_reduced_size, 0, 0],
                 spec_consts=np.asarray(
-                    [in_start_idx, 1, *self.dense_size],
+                    [w_size, 1, *self.dense_size],
                     dtype=np.uint32).view(np.float32)
             ))
 
@@ -306,19 +329,20 @@ class ToCSR(Module):
 from sili.core.serial import deserialize_buffer, serialize_buffer
 
 if __name__ == '__main__':
-    in_array = np.zeros((800,600))
+    width, height = 1920, 1200  # works for 1920x1080, not 800x600
+    in_array = np.zeros((width,height))
     gpu = GPUManager()
     in_buf = gpu.buffer(in_array)
-    to_csr = ToCSR(gpu, in_buf, (800,600), 10000)
+    to_csr = ToCSR(gpu, in_buf, (width,height), 10000)
 
-    indices = np.random.choice((800*600), 4800)
+    indices = np.random.choice((width*height), 4800)
     in_buf.data()[indices] = 1.0
     in_buf.data()[0] = 1.0
     t1 = time.time()
     to_csr.basic_forward()
     t2 = time.time()
 
-    # todo: BUG. fix bug where the 0 indicies aren't in the right spot with ~9999 indices, or near full
+    # todo: BUG. fix bug where the 0 indices aren't in the right spot with ~9999 indices, or near full
     print(f"execution time = {t2 - t1}, or {1 / (t2 - t1)} fps")
     print(to_csr.csr_io.get()[1].view(np.uint32))
 

@@ -11,6 +11,18 @@ layout(constant_id = 3) const uint full_size = 1024;  //should be equal to total
 
 shared uint shared_loss[gl_WorkGroupSize.x]; // I think this should be shared_loss[shared_memory_size]
 
+uint nearestPowerOfTwo(uint x) {
+    //ceil opeartion to nearest 2^x.
+    // 255->256, 256->256, 257->512
+    x = x - 1u;
+    x = x | (x >> 1u);
+    x = x | (x >> 2u);
+    x = x | (x >> 4u);
+    x = x | (x >> 8u);
+    x = x | (x >> 16u);
+    return x + 1u;
+}
+
 void main() {
     uint index = gl_GlobalInvocationID.x;
     uint local_index = gl_LocalInvocationID.x;
@@ -24,7 +36,8 @@ void main() {
     barrier();
 
     // Perform reduction to calculate total MSE loss within workgroup
-    for (uint stride = gl_WorkGroupSize.x / 2; stride > 0; stride /= 2) {
+    // todo: most correct reduction, copy this elsewhere
+    for (uint stride = nearestPowerOfTwo(gl_WorkGroupSize.x) >> 1; stride > 0; stride = stride>>1) {
         if (local_index < stride) {
             shared_loss[local_index] += shared_loss[local_index + stride];
         }

@@ -27,6 +27,22 @@ struct SparseValue {
 	float value;
 };
 
+
+uint nearestPowerOfTwo(uint x) {
+    //ceil opeartion to nearest 2^x, up to 65536.
+    // 255->256, 256->256, 257->512
+    x = x - 1u;
+    x = x | (x >> 1u);
+    x = x | (x >> 2u);
+    x = x | (x >> 4u);
+    x = x | (x >> 8u);
+    x = x | (x >> 16u);
+    return x + 1u;
+}
+
+#define NEARESTPOW2(x) \
+    ((x - 1u) | ((x - 1u) >> 1u) | ((x - 1u) >> 2u) | ((x - 1u) >> 4u) | ((x - 1u) >> 8u) | ((x - 1u) >> 16u) +1u)
+
 layout(constant_id = 1) const uint scan_start_index = 0; // location for scan indices in scan_indices
 layout(constant_id = 2) const uint mat_width = 0;
 layout(constant_id = 3) const uint mat_height = 600;
@@ -38,7 +54,7 @@ layout(std430, binding = 2) buffer Output2 {
 
 //local memory, should be minimized too, but this is about as small as I can think
 // as long as it's not above 40kb per kernel it should run.
-shared SparseValue local_value[gl_WorkGroupSize.x * 2];
+shared SparseValue local_value[NEARESTPOW2(gl_WorkGroupSize.x) * 2];
 
 // naive comparison
 bool index_compare(in const SparseValue left, in const SparseValue right){
@@ -119,31 +135,42 @@ void main(){
 
 	uint max_val = mat_width*mat_height;
 
-	if(offset+2*t<=max_val){
-		local_value[t*2].index   = offset+2*t;
-		local_value[t*2+1].index = offset+t*2+1;
-		local_value[t*2].value   = values[local_value[t*2].index];
-		local_value[t*2+1].value = values[local_value[t*2+1].index];
+	local_value[t*2].index   = offset+2*t;
+	local_value[t*2+1].index = offset+t*2+1;
 
-		local_bms(gl_WorkGroupSize.x);
-
-		// Write local memory back to buffer in case we pulled in the first place.
-		uint scan_index;
-		if(gl_WorkGroupID.x!=0) {
-			scan_index = scan_indices[gl_WorkGroupID.x + scan_start_index - 1];
-		}else{
-			scan_index = 0;
-		}
-		if(local_value[t*2].value!=0){
-			uint out_index = scan_index+t*2;
-			data[mat_height+out_index*2] = local_value[t*2].index;  // incorrect flattened index
-			data[mat_height+out_index*2+1] = floatBitsToUint(local_value[t*2].value);
-		}
-		if(local_value[t*2+1].value!=0){
-			uint out_index = scan_index+t*2+1;
-			data[mat_height+out_index*2] = local_value[t*2+1].index;  // incorrect flattened index
-			data[mat_height+out_index*2+1] = floatBitsToUint(local_value[t*2+1].value);
-		}
-		
+	if(offset+2*t<max_val) {
+		local_value[t * 2].value = values[local_value[t * 2].index];
+	}else {
+		local_value[t * 2].value = 0;
 	}
+	if(offset+2*t+1<max_val) {
+		local_value[t * 2 + 1].value = values[local_value[t * 2 + 1].index];
+	}else {
+		local_value[t * 2 + 1].value = 0;
+	}
+
+	local_bms(nearestPowerOfTwo(gl_WorkGroupSize.x));
+
+	// Write local memory back to buffer in case we pulled in the first place.
+	uint scan_index;
+	if(gl_WorkGroupID.x!=0) {
+		scan_index = scan_indices[gl_WorkGroupID.x + scan_start_index - 1];
+	}else{
+		scan_index = 0;
+	}
+	if(local_value[t*2].value!=0){
+		uint out_index = scan_index+t*2;
+		if(out_index<scan_indices[0]) { //some nonsense was showing after nnz
+			data[mat_height + out_index * 2] = local_value[t * 2].index;  // incorrect flattened index
+			data[mat_height + out_index * 2 + 1] = floatBitsToUint(local_value[t * 2].value);
+		}
+	}
+	if(local_value[t*2+1].value!=0){
+		uint out_index = scan_index+t*2+1;
+		if(out_index<scan_indices[0]) { //some nonsense was showing after nnz
+		  data[mat_height + out_index * 2] = local_value[t * 2 + 1].index;  // incorrect flattened index
+		  data[mat_height + out_index * 2 + 1] = floatBitsToUint(local_value[t * 2 + 1].value);
+		}
+	}
+		
 }

@@ -12,7 +12,23 @@ layout(constant_id = 1) const uint numel = 1024;  //should be equal to total of 
 layout(constant_id = 2) const uint in_start_index = 0;
 layout(constant_id = 3) const uint out_start_index = 0; // could be 0 for total output, or same as in_start for more reductions
 
-shared uint s_Data[gl_WorkGroupSize.x * 2];
+uint nearestPowerOfTwo(uint x) {
+    //ceil opeartion to nearest 2^x, up to 65536.
+    // 255->256, 256->256, 257->512
+    x = x - 1u;
+    x = x | (x >> 1u);
+    x = x | (x >> 2u);
+    x = x | (x >> 4u);
+    x = x | (x >> 8u);
+    x = x | (x >> 16u);
+    return x + 1u;
+}
+
+#define NEARESTPOW2(x) \
+    ((x - 1u) | ((x - 1u) >> 1u) | ((x - 1u) >> 2u) | ((x - 1u) >> 4u) | ((x - 1u) >> 8u) | ((x - 1u) >> 16u) +1u)
+// same as above but useful for array sizes ^
+
+shared uint s_Data[NEARESTPOW2(gl_WorkGroupSize.x) * 2];
 
 uint scan1Inclusive(uint idata, uint size)
 {
@@ -69,15 +85,21 @@ uvec4 scan4Exclusive(uvec4 idata4, uint size)
     return odata4;
 }
 
+
+
 void main()
 {
   uint idx = in_start_index+gl_GlobalInvocationID.x;
   if ( idx < numel+in_start_index ) {
       //Calculate scan
-      uint odata = scan1Inclusive(scan_io[idx], gl_WorkGroupSize.x);
+      uint odata = scan1Inclusive(scan_io[idx], nearestPowerOfTwo(gl_WorkGroupSize.x));
 
       //Write back
       uint idx_out = idx - in_start_index + out_start_index;
       scan_io[idx_out] = odata;
+
+      if(idx==numel && in_start_index==1){
+          scan_io[0] = scan_io[idx_out];
+      }
   }
 }
