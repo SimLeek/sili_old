@@ -1,0 +1,50 @@
+#version 450 core
+
+// This shader implements a sorting network for 1024 elements.
+//
+// It is follows the alternative notation for bitonic sorting networks, as given at:
+// https://en.m.wikipedia.org/wiki/Bitonic_sorter#Alternative_representation
+
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_ARB_shading_language_420pack : enable
+
+// Note that there exist hardware limits - look these up for your GPU via https://vulkan.gpuinfo.org/
+// sizeof(local_value[]) : Must be <= maxComputeSharedMemorySize
+// local_size_x          : Must be <= maxComputeWorkGroupInvocations
+
+layout(local_size_x_id = 0) in;
+
+struct SparseValue {
+	uint index;
+	float value;
+};
+
+layout(constant_id = 1) const uint mat_width = 0;
+layout(constant_id = 2) const uint mat_height = 600;
+
+layout(std430, binding = 0) buffer Output2 {
+	uint numel;
+    uint data[];
+};
+
+void main(){
+	uint t = gl_GlobalInvocationID.x ;
+
+	uint max_val = mat_width*mat_height;
+
+	if(t<max_val){
+        if(t>0) {
+            uint our_col = uint(data[mat_height+t*2]/mat_width);  // uint should be same as floor for positive numbers
+            uint prev_col = uint(data[mat_height+(t-1)*2]/mat_width);
+            int index_diff = int(our_col)-int(prev_col);  // must be int, not uint, due to 0 indices when reaching nnz
+            if(index_diff==1 || // doesn't work with index_diff!=0, since our_col would be 0 if we reached nnz.
+                (our_col==(mat_height-1) && index_diff!=0)){  // this one's for the last index location, which should be equal to nnz
+                data[our_col] = t;
+            }
+
+            //spvals[t].index = uint(spvals[t].index%mat_width);  // do this in a next shader to avoid barrier conflicts
+        }else{
+            data[0] = 0;
+        }
+	}
+}

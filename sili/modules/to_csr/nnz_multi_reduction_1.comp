@@ -1,0 +1,35 @@
+#version 450
+
+layout(std430, binding = 0) buffer Input {
+    float reduction_input[];
+};
+
+layout(std430, binding = 1) buffer Output {
+    uint reduction_output[];
+};
+
+layout (local_size_x_id = 0) in;
+layout(constant_id = 1) const uint max_val = 1024;  //should be equal to levels
+
+shared uint shared_loss[gl_WorkGroupSize.x]; // I think this should be shared_loss[shared_memory_size]
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    uint local_index = gl_LocalInvocationID.x;
+
+    shared_loss[local_index] = uint(reduction_input[index]!=0);
+
+    // Synchronize threads within workgroup
+    barrier();
+
+    for (uint stride = gl_WorkGroupSize.x / 2; stride > 0; stride /= 2) {
+        if (local_index < stride) {
+            shared_loss[local_index] += shared_loss[local_index + stride];
+        }
+        barrier();
+    }
+
+    if (local_index == 0) {
+        reduction_output[gl_WorkGroupID.x+1] = shared_loss[0];
+    }
+}

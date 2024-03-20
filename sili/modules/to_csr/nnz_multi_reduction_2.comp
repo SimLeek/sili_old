@@ -1,0 +1,40 @@
+#version 450
+
+layout(std430, binding = 0) buffer Input {
+    uint reduction_io[];
+};
+
+layout (local_size_x_id = 0) in;
+layout(constant_id = 1) const uint in_start_index = 1024;
+layout(constant_id = 2) const uint out_start_index = 1024; // could be 0 for total output, or same as in_start for more reductions
+layout(constant_id = 3) const uint full_size = 1024;  //should be equal to total of the specific region we're reducing
+
+shared uint shared_loss[gl_WorkGroupSize.x]; // I think this should be shared_loss[shared_memory_size]
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    uint local_index = gl_LocalInvocationID.x;
+
+    if (index < full_size) {
+        shared_loss[local_index] = reduction_io[in_start_index + index];
+    }else{
+        shared_loss[local_index] = 0;
+    }
+    // Synchronize threads within workgroup
+    barrier();
+
+    // Perform reduction to calculate total MSE loss within workgroup
+    for (uint stride = gl_WorkGroupSize.x / 2; stride > 0; stride /= 2) {
+        if (local_index < stride) {
+            shared_loss[local_index] += shared_loss[local_index + stride];
+        }
+        barrier();
+    }
+
+    // Write total MSE loss to global memory for each workgroup
+    if (local_index == 0) {
+        reduction_io[gl_WorkGroupID.x+out_start_index] = shared_loss[0];
+    }
+
+    //barrier(); // barrier so next stage has correct memory
+}

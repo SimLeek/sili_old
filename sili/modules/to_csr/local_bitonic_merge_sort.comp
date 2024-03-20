@@ -1,0 +1,149 @@
+#version 450 core
+
+// This shader implements a sorting network for 1024 elements.
+//
+// It is follows the alternative notation for bitonic sorting networks, as given at:
+// https://en.m.wikipedia.org/wiki/Bitonic_sorter#Alternative_representation
+
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_ARB_shading_language_420pack : enable
+
+// Note that there exist hardware limits - look these up for your GPU via https://vulkan.gpuinfo.org/
+// sizeof(local_value[]) : Must be <= maxComputeSharedMemorySize
+// local_size_x          : Must be <= maxComputeWorkGroupInvocations
+
+layout(local_size_x_id = 0) in;
+
+layout(std430, binding = 0) buffer Input {
+    float values[];
+};
+
+layout(std430, binding = 1) buffer Output {
+    uint scan_indices[];
+};
+
+struct SparseValue {
+	uint index;
+	float value;
+};
+
+layout(constant_id = 1) const uint scan_start_index = 0; // location for scan indices in scan_indices
+layout(constant_id = 2) const uint mat_width = 0;
+layout(constant_id = 3) const uint mat_height = 600;
+
+layout(std430, binding = 2) buffer Output2 {
+	uint numel;
+    uint data[];
+};
+
+//local memory, should be minimized too, but this is about as small as I can think
+// as long as it's not above 40kb per kernel it should run.
+shared SparseValue local_value[gl_WorkGroupSize.x * 2];
+
+// naive comparison
+bool index_compare(in const SparseValue left, in const SparseValue right){
+	/* DO NOT remove this code comment:
+	if(left.value==0 && right.value!=0){
+		return true; // saying: right < left, so swap; move right val to left
+	}else if(left.value!=0 && right.value==0){
+		return false; // saying: left < right, so leave in place
+	}
+	*/
+
+	//optimized xor equivalent to above, but much more confusing:
+	if((left.value==0) != (right.value==0)){
+		return left.value==0;
+	}else{
+		return left.index>right.index; // both indices have values and aren't sorted, so swap.
+		//note: if statements cause warp divergence, so also sorting zeros is faster
+	}
+}
+
+void local_compare_and_swap(ivec2 idx){
+	if (index_compare(local_value[idx.x], local_value[idx.y])) {
+		SparseValue tmp = local_value[idx.x];
+		local_value[idx.x] = local_value[idx.y];
+		local_value[idx.y] = tmp;
+	}
+}
+
+// Performs full-height flip (h height) over locally available indices.
+void local_flip(in uint h){
+		uint t = gl_LocalInvocationID.x;
+		barrier();
+
+		uint half_h = h >> 1; // Note: h >> 1 is equivalent to h / 2
+		ivec2 indices =
+			ivec2( h * ( ( 2 * t ) / h ) ) +
+			ivec2( t % half_h, h - 1 - ( t % half_h ) );
+
+		local_compare_and_swap(indices);
+}
+
+// Performs progressively diminishing disperse operations (starting with height h)
+// on locally available indices: e.g. h==8 -> 8 : 4 : 2.
+// One disperse operation for every time we can divide h by 2.
+void local_disperse(in uint h){
+	uint t = gl_LocalInvocationID.x;
+	for ( ; h > 1 ; h /= 2 ) {
+
+		barrier();
+
+		uint half_h = h >> 1; // Note: h >> 1 is equivalent to h / 2
+		ivec2 indices =
+			ivec2( h * ( ( 2 * t ) / h ) ) +
+			ivec2( t % half_h, half_h + ( t % half_h ) );
+
+		local_compare_and_swap(indices);
+	}
+}
+
+void local_bms(uint h){
+	uint t = gl_LocalInvocationID.x;
+	for ( uint hh = 2; hh <= h; hh <<= 1 ) {  // note:  h <<= 1 is same as h *= 2
+		local_flip( hh);
+		local_disperse( hh/2 );
+	}
+}
+
+void main(){
+	if(gl_GlobalInvocationID.x==0){
+		//this is effectively the overflow value too. We know buffer size ahead of time, so if numel>buffer_size, that's an overflow.
+		numel = scan_indices[0];
+	}
+
+	uint t = gl_LocalInvocationID.x ;
+
+    // We can use offset if we have more than one invocation.
+	uint offset = gl_WorkGroupSize.x * gl_WorkGroupID.x;
+
+	uint max_val = mat_width*mat_height;
+
+	if(offset+2*t<=max_val){
+		local_value[t*2].index   = offset+2*t;
+		local_value[t*2+1].index = offset+t*2+1;
+		local_value[t*2].value   = values[local_value[t*2].index];
+		local_value[t*2+1].value = values[local_value[t*2+1].index];
+
+		local_bms(gl_WorkGroupSize.x);
+
+		// Write local memory back to buffer in case we pulled in the first place.
+		uint scan_index;
+		if(gl_WorkGroupID.x!=0) {
+			scan_index = scan_indices[gl_WorkGroupID.x + scan_start_index - 1];
+		}else{
+			scan_index = 0;
+		}
+		if(local_value[t*2].value!=0){
+			uint out_index = scan_index+t*2;
+			data[mat_height+out_index*2] = local_value[t*2].index;  // incorrect flattened index
+			data[mat_height+out_index*2+1] = floatBitsToUint(local_value[t*2].value);
+		}
+		if(local_value[t*2+1].value!=0){
+			uint out_index = scan_index+t*2+1;
+			data[mat_height+out_index*2] = local_value[t*2+1].index;  // incorrect flattened index
+			data[mat_height+out_index*2+1] = floatBitsToUint(local_value[t*2+1].value);
+		}
+		
+	}
+}
