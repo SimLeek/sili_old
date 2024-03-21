@@ -133,13 +133,15 @@ class ToCSR(Module):
 
         if forward:
             self.forward_shader_1 = get_shader(file_path + os.sep + 'nnz_multi_reduction_1.comp')
-            self.forward_shader_2 = get_shader(file_path + os.sep + 'nnz_multi_reduction_2.comp')
+            #self.forward_shader_2 = get_shader(file_path + os.sep + 'nnz_multi_reduction_2.comp')
             self.forward_shader_3 = get_shader(file_path + os.sep + 'local_inclusive_scan.comp')
             self.forward_shader_4 = get_shader(file_path + os.sep + 'nonlocal_exclusive_scan.comp')
             self.forward_shader_5 = get_shader(file_path + os.sep + 'broadcast_array_add.comp')
-
             self.forward_shader_6 = get_shader(file_path + os.sep + 'local_bitonic_merge_sort.comp')
+
             self.forward_shader_7 = get_shader(file_path + os.sep + 'sparse_nnz_shift_sub.comp')
+            self.forward_shader_8 = get_shader(file_path + os.sep + 'local_reduce_index_diff.comp')
+            self.forward_shader_9 = get_shader(file_path + os.sep + 'nonlocal_reduce_index_diff.comp')
             # do this virtually off of flat_index->row/col, store csr as nnz,ptrs[rows+1], cols&vals
             # original shift val = row num, 1 location = row start index
             # use if statement to write row index to correct pointer loc
@@ -269,14 +271,51 @@ class ToCSR(Module):
                     dtype=np.uint32).view(np.float32)
             ))
 
+            # =================== CSR SECTION ========================
             self.forward_algorithms.append(self.gpu.manager.algorithm(
-                [self.csr_io.buffer],
+                [self.csr_io.buffer, self.intermediate_io],
                 spirv=self.forward_shader_7,
                 workgroup=[int(min(self.csr_io.max_nnz, self.gpu.max_workgroup_invocations)), 0, 0],
                 spec_consts=np.asarray(
                     [int(np.ceil(self.csr_io.max_nnz/self.gpu.max_workgroup_invocations)), *self.dense_size],
                     dtype=np.uint32).view(np.float32)
             ))
+
+            # todo: if intermediate io isn't large enough because of many rows, optionally use the dense input instead if it can be modified
+            #  otherwise, you'll need another intermediate io
+            self.forward_algorithms.append(self.gpu.manager.algorithm(
+                [self.csr_io.buffer, self.intermediate_io],
+                spirv=self.forward_shader_8,
+                workgroup=[int(np.ceil(self.csr_io.dense_shape[1] / self.gpu.max_workgroup_invocations)), 0, 0],
+                spec_consts=np.asarray(
+                    [int(min(self.csr_io.dense_shape[1] , self.gpu.max_workgroup_invocations)), self.dense_size[1]],
+                    dtype=np.uint32).view(np.float32)
+            ))
+
+            # todo: if the number of columns is greater than max_workgroup_invocations**2, this should be a while loop
+            if self.csr_io.dense_shape[1]>self.gpu.max_workgroup_invocations:
+                self.forward_algorithms.append(self.gpu.manager.algorithm(
+                    [self.csr_io.buffer, self.intermediate_io],
+                    spirv=self.forward_shader_9,
+                    workgroup=[int(np.ceil(self.csr_io.dense_shape[1] / (self.gpu.max_workgroup_invocations**2))), 0, 0],
+                    spec_consts=np.asarray(
+                        [
+                            int(min(np.ceil(self.csr_io.dense_shape[1]/self.gpu.max_workgroup_invocations), self.gpu.max_workgroup_invocations)),
+                            self.dense_size[1],
+                            self.gpu.max_workgroup_invocations
+                         ],
+                        dtype=np.uint32).view(np.float32)
+                ))
+
+                # now that the values were distributed back to the ends, they need to be distributed within groups
+                self.forward_algorithms.append(self.gpu.manager.algorithm(
+                    [self.csr_io.buffer, self.intermediate_io],
+                    spirv=self.forward_shader_8,
+                    workgroup=[int(np.ceil(self.csr_io.dense_shape[1] / self.gpu.max_workgroup_invocations)), 0, 0],
+                    spec_consts=np.asarray(
+                        [int(min(self.csr_io.dense_shape[1], self.gpu.max_workgroup_invocations)), self.dense_size[1]],
+                        dtype=np.uint32).view(np.float32)
+                ))
 
         self.has_backprop = backprop
 
@@ -335,9 +374,10 @@ if __name__ == '__main__':
     in_buf = gpu.buffer(in_array)
     to_csr = ToCSR(gpu, in_buf, (width,height), 10000)
 
-    indices = np.random.choice((width*height), 4800)
+    indices = np.random.choice((width*height), 10)
     in_buf.data()[indices] = 1.0
     in_buf.data()[0] = 1.0
+    #in_buf.data()[-1] = 1.0
     t1 = time.time()
     to_csr.basic_forward()
     t2 = time.time()
