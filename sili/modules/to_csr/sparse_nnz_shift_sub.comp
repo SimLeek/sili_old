@@ -37,9 +37,17 @@ void main(){
             uint our_col = uint(data[mat_height+t*2]/mat_width);  // uint should be same as floor for positive numbers
             uint prev_col = uint(data[mat_height+(t-1)*2]/mat_width);
             int index_diff = int(our_col)-int(prev_col);  // must be int, not uint, due to 0 indices when reaching nnz
-            if(index_diff==1 || // doesn't work with index_diff!=0, since our_col would be 0 if we reached nnz.
+            if(index_diff>=1 || // doesn't work with index_diff!=0, since our_col would be 0 if we reached nnz, resulting in negative.
                 (our_col==(mat_height-1) && index_diff!=0)){  // this one's for the last index location, which should be equal to nnz
-                data[our_col] = t;
+                /* todo: technically, this for loop should be a parallel reduction:
+                 *   Write each index_diff value of 1 or larger to scan_io
+                 *   While there's any index that's at 2, 4, 8, 16, etc., write its location to the last 16, 8, 4, 2, 1 data[col] locations
+                 *   Quit the while loop if index becomes 0
+                 *   on non-sparse, it's a no-op. On really sparse, it's log_2(width).
+                 */
+                for(;index_diff>0;index_diff--){
+                    data[our_col-index_diff+1] = t;
+                }
             }
 
             //spvals[t].index = uint(spvals[t].index%mat_width);  // do this in a next shader to avoid barrier conflicts
