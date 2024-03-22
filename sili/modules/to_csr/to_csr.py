@@ -142,6 +142,7 @@ class ToCSR(Module):
             self.forward_shader_7 = get_shader(file_path + os.sep + 'sparse_nnz_shift_sub.comp')
             self.forward_shader_8 = get_shader(file_path + os.sep + 'local_reduce_index_diff.comp')
             self.forward_shader_9 = get_shader(file_path + os.sep + 'nonlocal_reduce_index_diff.comp')
+            self.forward_shader_10 = get_shader(file_path + os.sep + 'full_index_to_row_index.comp')
             # do this virtually off of flat_index->row/col, store csr as nnz,ptrs[rows+1], cols&vals
             # original shift val = row num, 1 location = row start index
             # use if statement to write row index to correct pointer loc
@@ -317,6 +318,15 @@ class ToCSR(Module):
                         dtype=np.uint32).view(np.float32)
                 ))
 
+            self.forward_algorithms.append(self.gpu.manager.algorithm(
+                [self.csr_io.buffer],
+                spirv=self.forward_shader_10,
+                workgroup=[int(np.ceil(self.csr_io.max_nnz / self.gpu.max_workgroup_invocations)), 0, 0],
+                spec_consts=np.asarray(
+                    [int(min(self.csr_io.max_nnz, self.gpu.max_workgroup_invocations)), *self.dense_size],
+                    dtype=np.uint32).view(np.float32)
+            ))
+
         self.has_backprop = backprop
 
         self.basic_sequence = None  # mostly for debugging
@@ -374,15 +384,15 @@ if __name__ == '__main__':
     in_buf = gpu.buffer(in_array)
     to_csr = ToCSR(gpu, in_buf, (width,height), 10000)
 
-    indices = np.random.choice((width*height), 10)
+    indices = np.random.choice((width*height), 10000)
     in_buf.data()[indices] = 1.0
     in_buf.data()[0] = 1.0
-    #in_buf.data()[-1] = 1.0
+    in_buf.data()[-1] = 1.0
     t1 = time.time()
     to_csr.basic_forward()
     t2 = time.time()
 
-    # todo: BUG. fix bug where the 0 indices aren't in the right spot with ~9999 indices, or near full
+    # todo: BUG? fix bug where the 0 indices aren't in the right spot with ~9999 indices, or near full
     print(f"execution time = {t2 - t1}, or {1 / (t2 - t1)} fps")
     print(to_csr.csr_io.get()[1].view(np.uint32))
 

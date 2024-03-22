@@ -44,9 +44,11 @@ void main() {
     if (index*skip_size<mat_height) {
         // shift the built up values left once
         if (local_index>0) {
-            scan_io[index*skip_size] = scan_io[index*skip_size+1]-1;
-            scan_io[index*skip_size+1]=1;
-            data[index*skip_size-1] = data[index*skip_size];
+            if(scan_io[index*skip_size+1]>1){
+                scan_io[index*skip_size] = scan_io[index*skip_size+1]-1;
+                scan_io[index*skip_size+1]=1;
+                data[index*skip_size-1] = data[index*skip_size];
+            }
 
             shared_io[local_index] = scan_io[index*skip_size];
 
