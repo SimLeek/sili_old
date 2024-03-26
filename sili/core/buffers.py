@@ -79,24 +79,23 @@ class ConvVertPyrBuffer(object):
     def __init__(self, gpu: GPUManager, array):
         if isinstance(array, np.ndarray):
             # assume this is a numpy image from OpenCV:
-            self.levels = array.shape[0]
-            self.height = array.shape[1]
+            self.height = array.shape[0]
             self.buffer = gpu.buffer(array)
         else:
             raise NotImplementedError(f'sorry, idk wtf this is: {type(array)}')
 
     def __setstate__(self, state):
-        self.levels, self.height = state[:2]
+        self.height = state[:2]
         # Restore the buffer from serialized data
         self.buffer = deserialize_buffer(state[2])
 
     def __getstate__(self):
         # Return state to be pickled (excluding buffer, assuming buffer.data() is pickleable)
-        return self.levels, self.height, serialize_buffer(self.buffer)
+        return self.height, serialize_buffer(self.buffer)
 
     @property
     def size(self):
-        return self.levels * self.height
+        return self.height
 
     def set(self, array):
         if isinstance(array, np.ndarray):
@@ -105,7 +104,7 @@ class ConvVertPyrBuffer(object):
             raise NotImplementedError(f'sorry, idk wtf this is: {type(array)}')
 
     def get(self):
-        return self.buffer.data().reshape(self.levels, self.height)
+        return self.buffer.data().reshape([self.height])
 
 
 class ConvDepthReductionBuffer(object):

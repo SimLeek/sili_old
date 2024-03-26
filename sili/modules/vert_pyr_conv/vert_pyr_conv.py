@@ -103,7 +103,7 @@ class DepthPyrConvVert(Module):
             [self.in_img_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.out_pyr.image_buffer, self.vert_conv.buffer],
             spirv=self.forward_shader,
             workgroup=[int(np.ceil(self.in_img_pyr.size / self.gpu.max_workgroup_invocations)), 0, 0],
-            spec_consts=np.asarray([self.gpu.max_workgroup_invocations], dtype=np.uint32).view(np.float32)
+            spec_consts=np.asarray([self.gpu.max_workgroup_invocations, self.vert_conv.height], dtype=np.uint32).view(np.float32)
         )
 
         self.has_forward = True

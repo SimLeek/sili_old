@@ -24,9 +24,10 @@ layout(std430, binding = 2) buffer OutputBuffer {
 };
 
 layout(std430, binding = 3) buffer vertConvBuffer {
-    uint kernel_height;
     float vertWeights[];
 };
+
+layout(constant_id = 1) const uint kernel_height = 0;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -50,26 +51,27 @@ void main() {
         out_width = pyramidLevels[out_level].width;
         out_height = pyramidLevels[out_level].height;
     }
-    uint out_x_idx = ((idx-out_startIdx)/channels)/out_width;
-    uint out_y_idx = ((idx-out_startIdx)/channels)%out_width;
+    uint out_x_idx = ((idx-out_startIdx)/channels)%out_width;
+    uint out_y_idx = ((idx-out_startIdx)/channels)/out_width;
     uint out_c_idx = idx%channels;
 
     float result = 0;
     for(int k=0; k<kernel_height; k++){
         int h_diff = k-int(kernel_height/2);
 
-        uint in_x_idx = out_x_idx;
-        uint in_y_idx = out_y_idx+h_diff;
+        uint in_x_idx = out_y_idx;
+        int in_y_idx = int(out_x_idx)+h_diff;
         uint in_c_idx = out_c_idx;
 
-        if(in_y_idx>=0 && in_y_idx<out_height){
+        if(in_y_idx>=0 && in_y_idx<out_width){
             uint in_idx = out_startIdx+(in_y_idx*out_height+in_x_idx)*channels + in_c_idx;
-            result+=inputImage[in_idx]*vertWeights[out_level*levels+k];
+            result+=inputImage[in_idx]*vertWeights[k];
         }
         //padding is zero
     }
 
-    outputImage[idx] = result;
+    uint out_idx = out_startIdx+out_x_idx*out_height*channels + out_y_idx*channels + out_c_idx;
+    outputImage[out_idx] = result;
 
     // should show RGB bands in either vertical or horizontal
     /*uint wid = gl_WorkGroupID.x;
