@@ -38,31 +38,22 @@ class GPUManager(object):
 
 
 def get_shader(filename):
-    # Check if the filename ends with .glsl or .comp
     if filename.endswith('.glsl') or filename.endswith('.comp'):
-        # Check if a compiled .spv version of the file exists
         spv_filename = filename[:-5] + '.spv'
-        if os.path.exists(spv_filename):
-            # Read the compiled .spv file
-            with open(spv_filename, 'rb') as f:
-                shader = f.read()
-        else:
-            # Compile the GLSL file using glslc
+        if not os.path.exists(spv_filename):
             try:
-                result = subprocess.run(["glslc", filename, "-o", spv_filename],
+                subprocess.run(["glslc", filename, "-o", spv_filename],
                                         check=True,
                                         stdout=sys.stdout,
                                         stderr=sys.stderr, text=True)
             except subprocess.CalledProcessError as e:
-                # Print the full output from the glslc command
                 print("glslc command failed with output:")
                 print(e.stdout)
                 print(e.stderr, file=sys.stderr)
                 raise e
 
-            # Wait for the glslc command to finish and check for errors
-            with open(spv_filename, 'rb') as f:
-                shader = f.read()
+        with open(spv_filename, 'rb') as f:
+            shader = f.read()
     else:
         raise ValueError("Invalid file extension. Filename must end with .glsl or .comp")
 
