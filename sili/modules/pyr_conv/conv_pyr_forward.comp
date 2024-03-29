@@ -1,0 +1,139 @@
+#version 430
+
+//layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+layout (local_size_x_id = 0) in;
+
+struct PyramidLevel {
+    int startIdx;
+    int width;
+    int height;
+};
+
+layout(std430, binding = 0) buffer InputBuffer {
+    float inputImage[];
+};
+
+layout(std430, binding = 1) buffer PyramidData {
+    int channels;
+    int levels;
+    PyramidLevel pyramidLevels[];
+};
+
+layout(std430, binding = 2) buffer OutputBuffer {
+    float outputImage[];
+};
+
+layout(std430, binding = 3) buffer vertConvBuffer {
+    float weights[];
+};
+
+layout(constant_id = 1) const uint kernel_width = 0;
+layout(constant_id = 2) const uint kernel_height = 0;
+
+// this allows us to use special indexing with remainders while using max 1D size
+// their product SHOULD be local_size_x to optimize caching
+layout(constant_id = 3) const uint chunk_width = 0;
+layout(constant_id = 4) const uint chunk_height = 0;
+
+int optimized_index(ivec4 optim_xy, uint image_width, uint image_height){ // image width and height are still needed because x and y will be changed in convolutions
+    if(optim_xy.x != uint(-1)){
+        int full_index_y = optim_xy.y*chunk_height+optim_xy.t;
+        int full_index_x = optim_xy.x*chunk_width+optim_xy.z;
+        int full_index = full_index_y*image_width+full_index_x;
+        return full_index;
+    }else{
+        int full_index = optim_xy.t*image_width+optim_xy.z;
+        return full_index;
+    }
+
+    // Do this after the function: if (full_index<image_width*image_height && full_index>=0)
+}
+
+//note: if memory is less of a problem than all of these multiply/divide ops, this can be pre-computed.
+ivec4 optimized_xy(uint unoptimized_index, uint image_width, uint image_height){  // unoptimized_index is WITHIN the image, so subtract image_start in image pyramids
+    if(unoptimized_index<image_height*image_width){ // Happens often. sum_of_image_sizes%1024!=0
+        uint image_w_chunks = image_width/chunk_width;  //floor
+        uint image_h_chunks = image_height/chunk_height;
+        uint max_w_chunk = image_w_chunks*chunk_width;
+        uint max_h_chunk = image_h_chunks*chunk_height;
+        if(unoptimized_index<max_w_chunk*max_h_chunk){
+            uint num_chunks = chunk_width*chunk_height;
+            uint large_idx = unoptimized_index/num_chunks;
+            uint large_x = large_idx%image_w_chunks;
+            uint large_y = large_idx/image_w_chunks;
+            uint small_idx = unoptimized_index%num_chunks;
+            uint small_x = small_idx%chunk_width;
+            uint small_y = small_idx/chunk_width;
+            return ivec4(large_x, large_y, small_x, small_y);
+        }else if(unoptimized_index<image_width*max_h_chunk){
+            uint r_width = image_width - max_w_chunk;
+            uint r_optim = unoptimized_index-max_h_chunk*max_w_chunk;
+            uint small_x = r_optim%r_width + max_w_chunk;
+            uint small_y = r_optim/r_width;
+            return ivec4(-1, -1, small_x, small_y);  // special case. Small x and y are now global values.
+        }else{
+            uint r_height = image_height - max_h_chunk;
+            uint r_optim = unoptimized_index-max_h_chunk*image_width;
+            // since the height is now small, it's better to zigzag up and down to improve cache hits
+            uint small_x = r_optim/r_height + max_h_chunk;
+            uint small_y = r_optim%r_height;
+            return ivec4(-1, -1, small_x, small_y);  // special case. Small x and y are now global values.
+        }
+    }else{
+        return ivec4(-1, -1, -1, -1);
+    }
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+
+    int out_level = -1;
+    int out_startIdx = -1;
+    int out_width = -1;
+    int out_height = -1;
+    for(int level=0;level<levels-1;level++) {
+        if(int(idx)>=pyramidLevels[level].startIdx*channels && int(idx)<pyramidLevels[level+1].startIdx*channels){
+            out_level = level;
+            out_startIdx = pyramidLevels[level].startIdx*channels;
+            out_width = pyramidLevels[level].width;
+            out_height = pyramidLevels[level].height;
+            // no breaks. All invocations run the same lines.
+        }
+    }
+    if(out_level==-1){// top level wasn't checked
+        out_level = levels-1;
+        out_startIdx = pyramidLevels[out_level].startIdx*channels;
+        out_width = pyramidLevels[out_level].width;
+        out_height = pyramidLevels[out_level].height;
+    }
+    ivec4 optim_xy = optimized_xy((idx-out_startIdx)/channels, out_width, out_height);
+    uint out_c_idx = idx%channels;
+
+    uint out_idx = optimized_index(optim_xy);
+    if(out_idx>=0 && out_idx<out_width*out_height){
+        float result = 0;
+        for(int kw=0; kw<kernel_width; kw++){
+            int w_diff = kw-int(kernel_width/2);
+            for(int kh=0; kh<kernel_height; kh++){
+                int h_diff = kh-int(kernel_height/2);
+                ivec4 optim_xy_in = optim_xy;
+                optim_xy_in.z +=w_diff;
+                optim_xy_in.t +=h_diff;
+                uint in_idx = optimized_index(optim_xy_in);
+                if(in_idx>=0 && in_idx<out_width*out_height){
+                    result+=inputImage[in_idx*channels+out_startIdx+out_c_idx]*weights[kh*kernel_width+kw];
+                }
+            }
+            //padding is zero
+        }
+
+        out_idx = out_idx*channels+out_startIdx+out_c_idx;
+        outputImage[out_idx] = result;
+
+        // should show RGB bands to show optimization is working
+        uint wid = gl_WorkGroupID.x;
+        if (out_idx%3==wid%3){
+            outputImage[out_idx] = min(outputImage[out_idx]+result, 1.0);
+        }
+    }
+}
