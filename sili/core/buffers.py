@@ -42,6 +42,39 @@ class ImageBuffer(object):
         return self.buffer.data().reshape(self.height, self.width, self.colors)
 
 
+class GrayImageBuffer(object):
+    def __init__(self, gpu: GPUManager, image):
+        if isinstance(image, np.ndarray):
+            # assume this is a numpy image from OpenCV:
+            self.height = image.shape[0]
+            self.width = image.shape[1]
+            self.buffer = gpu.buffer(image)
+        else:
+            raise NotImplementedError(f'sorry, idk wtf this is: {type(image)}')
+
+    def __setstate__(self, state):
+        self.height, self.width = state[:2]
+        # Restore the buffer from serialized data
+        self.buffer = deserialize_buffer(state[3])
+
+    def __getstate__(self):
+        # Return state to be pickled (excluding buffer, assuming buffer.data() is picklable)
+        return (self.height, self.width,
+                serialize_buffer(self.buffer))
+
+    @property
+    def size(self):
+        return self.height * self.width
+
+    def set(self, image):
+        if isinstance(image, np.ndarray):
+            self.buffer.data()[...] = image.flatten()
+        else:
+            raise NotImplementedError(f'sorry, idk wtf this is: {type(image)}')
+
+    def get(self):
+        return self.buffer.data().reshape(self.height, self.width)
+
 class ConvDepthBuffer(object):
     def __init__(self, gpu: GPUManager, array):
         if isinstance(array, np.ndarray):

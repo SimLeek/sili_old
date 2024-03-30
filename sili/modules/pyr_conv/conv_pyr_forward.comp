@@ -36,13 +36,13 @@ layout(constant_id = 3) const uint chunk_width = 0;
 layout(constant_id = 4) const uint chunk_height = 0;
 
 int optimized_index(ivec4 optim_xy, uint image_width, uint image_height){ // image width and height are still needed because x and y will be changed in convolutions
-    if(optim_xy.x != uint(-1)){
-        int full_index_y = optim_xy.y*chunk_height+optim_xy.t;
-        int full_index_x = optim_xy.x*chunk_width+optim_xy.z;
-        int full_index = full_index_y*image_width+full_index_x;
+    if(optim_xy.x != -1){
+        int full_index_y = optim_xy.y*int(chunk_height)+optim_xy.w;
+        int full_index_x = optim_xy.x*int(chunk_width)+optim_xy.z;
+        int full_index = full_index_x*int(image_height)+full_index_y;
         return full_index;
     }else{
-        int full_index = optim_xy.t*image_width+optim_xy.z;
+        int full_index = optim_xy.z*int(image_height)+optim_xy.w;
         return full_index;
     }
 
@@ -57,11 +57,11 @@ ivec4 optimized_xy(uint unoptimized_index, uint image_width, uint image_height){
         uint max_w_chunk = image_w_chunks*chunk_width;
         uint max_h_chunk = image_h_chunks*chunk_height;
         if(unoptimized_index<max_w_chunk*max_h_chunk){
-            uint num_chunks = chunk_width*chunk_height;
-            uint large_idx = unoptimized_index/num_chunks;
+            uint chunk_size = chunk_width*chunk_height;
+            uint large_idx = unoptimized_index/ chunk_size;
             uint large_x = large_idx%image_w_chunks;
             uint large_y = large_idx/image_w_chunks;
-            uint small_idx = unoptimized_index%num_chunks;
+            uint small_idx = unoptimized_index% chunk_size;
             uint small_x = small_idx%chunk_width;
             uint small_y = small_idx/chunk_width;
             return ivec4(large_x, large_y, small_x, small_y);
@@ -75,8 +75,8 @@ ivec4 optimized_xy(uint unoptimized_index, uint image_width, uint image_height){
             uint r_height = image_height - max_h_chunk;
             uint r_optim = unoptimized_index-max_h_chunk*image_width;
             // since the height is now small, it's better to zigzag up and down to improve cache hits
-            uint small_x = r_optim/r_height + max_h_chunk;
-            uint small_y = r_optim%r_height;
+            uint small_x = r_optim/r_height;
+            uint small_y = r_optim%r_height + max_h_chunk;
             return ivec4(-1, -1, small_x, small_y);  // special case. Small x and y are now global values.
         }
     }else{
@@ -87,14 +87,17 @@ ivec4 optimized_xy(uint unoptimized_index, uint image_width, uint image_height){
 void main() {
     uint idx = gl_GlobalInvocationID.x;
 
+    uint pyr_size = (pyramidLevels[levels-1].startIdx+2);
+    uint out_c_idx = idx/pyr_size;
+
     int out_level = -1;
     int out_startIdx = -1;
     int out_width = -1;
     int out_height = -1;
     for(int level=0;level<levels-1;level++) {
-        if(int(idx)>=pyramidLevels[level].startIdx*channels && int(idx)<pyramidLevels[level+1].startIdx*channels){
+        if(int(idx-pyr_size*out_c_idx)>=pyramidLevels[level].startIdx && int(idx-pyr_size*out_c_idx)<pyramidLevels[level+1].startIdx){
             out_level = level;
-            out_startIdx = pyramidLevels[level].startIdx*channels;
+            out_startIdx = pyramidLevels[level].startIdx;
             out_width = pyramidLevels[level].width;
             out_height = pyramidLevels[level].height;
             // no breaks. All invocations run the same lines.
@@ -102,14 +105,16 @@ void main() {
     }
     if(out_level==-1){// top level wasn't checked
         out_level = levels-1;
-        out_startIdx = pyramidLevels[out_level].startIdx*channels;
+        out_startIdx = pyramidLevels[out_level].startIdx;
         out_width = pyramidLevels[out_level].width;
         out_height = pyramidLevels[out_level].height;
     }
-    ivec4 optim_xy = optimized_xy((idx-out_startIdx)/channels, out_width, out_height);
-    uint out_c_idx = idx%channels;
 
-    uint out_idx = optimized_index(optim_xy);
+    ivec4 optim_xy = optimized_xy((idx-pyr_size*out_c_idx-out_startIdx), out_width, out_height);
+
+    int out_idx = optimized_index(optim_xy, out_width, out_height);
+    uint image_w_chunks = out_width/chunk_width;
+    uint image_h_chunks = out_height/chunk_height;
     if(out_idx>=0 && out_idx<out_width*out_height){
         float result = 0;
         for(int kw=0; kw<kernel_width; kw++){
@@ -118,22 +123,22 @@ void main() {
                 int h_diff = kh-int(kernel_height/2);
                 ivec4 optim_xy_in = optim_xy;
                 optim_xy_in.z +=w_diff;
-                optim_xy_in.t +=h_diff;
-                uint in_idx = optimized_index(optim_xy_in);
-                if(in_idx>=0 && in_idx<out_width*out_height){
-                    result+=inputImage[in_idx*channels+out_startIdx+out_c_idx]*weights[kh*kernel_width+kw];
+                optim_xy_in.w +=h_diff;
+                int in_idx = optimized_index(optim_xy_in, out_width, out_height);
+                if(in_idx>=0 && in_idx<out_width*out_height && (out_idx%out_height)>=-w_diff && (out_idx%out_height)<(out_height-w_diff)){
+                    result+=inputImage[(in_idx+out_startIdx)*channels+out_c_idx]*weights[kh*kernel_width+kw];
                 }
             }
             //padding is zero
         }
 
-        out_idx = out_idx*channels+out_startIdx+out_c_idx;
+        out_idx = int((out_idx+out_startIdx)*channels+out_c_idx);
         outputImage[out_idx] = result;
 
         // should show RGB bands to show optimization is working
-        uint wid = gl_WorkGroupID.x;
-        if (out_idx%3==wid%3){
-            outputImage[out_idx] = min(outputImage[out_idx]+result, 1.0);
-        }
+        /*uint wid = gl_WorkGroupID.x;
+        if (out_c_idx==wid%3){
+            outputImage[out_idx] = min(outputImage[out_idx]+.1, 1.0);
+        }*/
     }
 }

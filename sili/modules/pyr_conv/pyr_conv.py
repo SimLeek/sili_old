@@ -1,3 +1,5 @@
+import time
+
 import kp
 import numpy as np
 from displayarray import DirectDisplay
@@ -5,9 +7,9 @@ import cv2
 import os
 from sili.modules.base import Module
 
-from sili.core.buffers import ImageBuffer, ImagePyramidBuffer, calculate_pyramid_levels, ConvVertPyrBuffer, ConvDepthReductionBuffer
+from sili.core.buffers import ImageBuffer, ImagePyramidBuffer, calculate_pyramid_levels, GrayImageBuffer, ConvDepthReductionBuffer
 from sili.core.devices.gpu import GPUManager, get_shader
-
+from sili.core.util import find_good_dimension_sizes
 file_path = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -43,7 +45,8 @@ def calc_pyr_reduce_buf_size(levels, workgroup_size, channels = 3):
         total_size += int(np.ceil(width*height*channels/workgroup_size))
     return total_size
 
-def gaussian_kernel(size, sigma):
+
+def gaussian_center_surround(size, sigma):
     """
     Generates a 1D Gaussian kernel of a given size and standard deviation (sigma).
 
@@ -56,28 +59,39 @@ def gaussian_kernel(size, sigma):
     """
     indices = np.linspace(-size / 2, size / 2, size)
 
-    kernel = np.exp(-(indices ** 2) / (2 * sigma ** 2))
+    x_kernel = np.exp(-(indices ** 2) / (2 * sigma ** 2))
 
-    # Normalize the kernel
-    kernel /= np.sum(kernel)
 
+    # Generate 1D Gaussian kernel along y-axis
+    # y_kernel = x_kernel.reshape(-1, 1)  # Reshape to column vector
+
+    # Compute outer product to form 2D Gaussian kernel
+    kernel = np.outer(x_kernel, x_kernel)
+
+    # center on surround off
+    kernel -= np.max(kernel)
+    kernel[size//2, size//2] = np.abs(np.sum(kernel))
+    kernel /= np.max(kernel)
     return kernel
 
-class DepthPyrConvVert(Module):
+    #return np.ones_like(kernel)/9
+
+    #k = np.zeros_like(kernel)/18
+    #k[1,1]=1
+    #return k
+
+class PyrConv(Module):
     def __init__(self, gpu: GPUManager, image_pyr: ImagePyramidBuffer, init_conv=None, backprop_input_buf=None,
                  backprop_conv=False):
         """
-        2D color-ignoring convolution, vertical half.
-
-        WARNING: if you're not using this for a gaussian kernel, you're probably using it wrong.
-          Determine if your ideal kernel is separable (rank-1 matrix) before using this module
+        2D color-ignoring convolution.
 
         :param gpu: the GPUManager
         :param image_pyr: Either an ImagePyramidBuffer or a list containing the widths and heights of all images in pyr
         """
         super().__init__(gpu)
 
-        self.forward_shader = get_shader(file_path + os.sep + 'vert_pyr_forward.comp')
+        self.forward_shader = get_shader(file_path + os.sep + 'conv_pyr_forward.comp')
         if not isinstance(image_pyr, ImagePyramidBuffer):
             self.in_img_pyr = ImagePyramidBuffer(self.gpu, image_pyr)
         else:
@@ -85,24 +99,26 @@ class DepthPyrConvVert(Module):
 
         self.out_pyr = ImagePyramidBuffer(gpu, self.in_img_pyr.levels, use_lvl_buf=False)
         if callable(init_conv):
-            self.vert_conv = ConvVertPyrBuffer(gpu, init_conv(self.in_img_pyr.levels[1]))
+            self.conv = GrayImageBuffer(gpu, init_conv(3))
         elif isinstance(init_conv, np.ndarray):
-            self.vert_conv = ConvVertPyrBuffer(gpu, init_conv)
+            self.conv = GrayImageBuffer(gpu, init_conv)
         else:
-            self.vert_conv = ConvVertPyrBuffer(gpu, np.zeros((self.in_img_pyr.levels[1], 3)))
-        self.depth_conv_str = ConvVertPyrBuffer(gpu, np.zeros_like(self.vert_conv.buffer.data()))  # adagrad weights
+            self.conv = GrayImageBuffer(gpu, np.zeros((3, 3)))
+        self.depth_conv_str = GrayImageBuffer(gpu, np.zeros([self.conv.width, self.conv.height]))  # adagrad weights
 
         # PIPELINE OBJECTS:
         # FORWARD
         # these need to be accessible so that kompute can record input/output for pipelines
-        self.forward_input_buffers = [self.in_img_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.vert_conv.buffer]
+        self.forward_input_buffers = [self.in_img_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.conv.buffer]
         self.forward_output_buffers = [self.out_pyr.image_buffer]
 
+        dims = find_good_dimension_sizes(self.gpu.max_workgroup_invocations, 2)
+
         self.forward_algorithm = self.gpu.manager.algorithm(
-            [self.in_img_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.out_pyr.image_buffer, self.vert_conv.buffer],
+            [self.in_img_pyr.image_buffer, self.in_img_pyr.pyr_lvl_buffer, self.out_pyr.image_buffer, self.conv.buffer],
             spirv=self.forward_shader,
             workgroup=[int(np.ceil(self.in_img_pyr.size / self.gpu.max_workgroup_invocations)), 0, 0],
-            spec_consts=np.asarray([self.gpu.max_workgroup_invocations, self.vert_conv.height], dtype=np.uint32).view(np.float32)
+            spec_consts=np.asarray([self.gpu.max_workgroup_invocations, self.conv.width, self.conv.height, *dims], dtype=np.uint32).view(np.float32)
         )
 
         self.has_forward = True
@@ -122,7 +138,7 @@ class DepthPyrConvVert(Module):
             self.backprop_input = True
             shad_input_back = get_shader(file_path + os.sep + 'vert_pyr_backward_input.comp')
 
-            self.backward_input_buffers = [self.in_img_pyr.pyr_lvl_buffer, self.vert_conv.buffer, self.out_pyr_err]
+            self.backward_input_buffers = [self.in_img_pyr.pyr_lvl_buffer, self.conv.buffer, self.out_pyr_err]
             self.backward_output_buffers = [backprop_input_buf]
 
             self.algorithm_input_back = self.gpu.manager.algorithm(
@@ -163,7 +179,7 @@ class DepthPyrConvVert(Module):
                 l_size = level_data[l*3+1]*level_data[l*3+2]*self.in_img_pyr.channels
                 workgroup_size = min(l_size*num_levels,self.gpu.max_workgroup_invocations)
                 self.algorithm_conv_prepools_1.append(self.gpu.manager.algorithm(
-                    [self.in_img_pyr.image_buffer, self.out_pyr_err.image_buffer, self.buf_conv_prepool, self.in_img_pyr.pyr_lvl_buffer, self.vert_conv.buffer,
+                    [self.in_img_pyr.image_buffer, self.out_pyr_err.image_buffer, self.buf_conv_prepool, self.in_img_pyr.pyr_lvl_buffer, self.conv.buffer,
                      self.depth_conv_str.buffer],
                     spirv=shad_conv_back_prepool_1,
                     workgroup=[int(np.ceil(l_size*num_levels / workgroup_size)), 0, 0],
@@ -265,7 +281,7 @@ class DepthPyrConvVert(Module):
     def optim_buffs(self):
         # note: it's fine that depth_conv_err is larger than depth conv.
         #  Optim implementations should take depth_conv.size as input
-        return [self.vert_conv, self.depth_conv_err, self.depth_conv_contrib, self.depth_conv_str]
+        return [self.conv, self.depth_conv_err, self.depth_conv_contrib, self.depth_conv_str]
 
     def basic_forward(self, image_pyr):
         # todo: make this a superclass method
@@ -276,13 +292,16 @@ class DepthPyrConvVert(Module):
             for f in self.forward_ops():
                 self.basic_sequence.record(f)
             self.basic_sequence.record(kp.OpTensorSyncLocal([*self.forward_output_buffers]))
+        self.t0 = time.time()
         self.basic_sequence.eval()
+        self.t1 = time.time()
         return self.out_pyr
 
     def display_basic_forward_sequence(self, image, display=None):
         if display is None:
             display = DirectDisplay()
         out_images = self.basic_forward(image)
+        print(f"time:{self.t1-self.t0}, fps:{1./(self.t1-self.t0)}")
         for i, o in enumerate(out_images.get()):
             display.imshow(f'output {i}', o)
         while True:
@@ -299,7 +318,7 @@ if __name__ == '__main__':
         gpu = GPUManager()
         im_pyr = pickle.load(f).to(gpu)
 
-        pyr = DepthPyrConvVert(gpu, im_pyr, lambda x: gaussian_kernel(x, 3))
+        pyr = PyrConv(gpu, im_pyr, lambda x: gaussian_center_surround(x, 3))
         pyr.display_basic_forward_sequence(im_pyr)
 
     #im_pyr = pyr.run_basic_forward_sequence(im)
