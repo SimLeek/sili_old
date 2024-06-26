@@ -259,7 +259,6 @@ class ToCSR(Module):
         return []
 
     def basic_forward(self):
-        # todo: make this a superclass method
         if self.basic_sequence is None:
             self.basic_sequence = self.gpu.manager.sequence()
             self.basic_sequence.record(kp.OpTensorSyncDevice([*self.forward_input_buffers]))

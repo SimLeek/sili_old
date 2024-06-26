@@ -1,5 +1,6 @@
 #version 430
 
+//layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 layout (local_size_x_id = 0) in;
 
 struct PyramidLevel {
@@ -114,25 +115,98 @@ void main() {
     int out_idx = optimized_index(optim_xy, out_width, out_height);
     uint image_w_chunks = out_width/chunk_width;
     uint image_h_chunks = out_height/chunk_height;
-    if(out_idx>=0 && out_idx<out_width*out_height){
-        float result = 0;
-        for(int kw=0; kw<kernel_width; kw++){
-            int w_diff = kw-int(kernel_width/2);
-            for(int kh=0; kh<kernel_height; kh++){
-                int h_diff = kh-int(kernel_height/2);
-                ivec4 optim_xy_in = optim_xy;
-                optim_xy_in.z +=w_diff;
-                optim_xy_in.w +=h_diff;
-                int in_idx = optimized_index(optim_xy_in, out_width, out_height);
-                if(in_idx>=0 && in_idx<out_width*out_height && (out_idx%out_height)>=-w_diff && (out_idx%out_height)<(out_height-w_diff)){
-                    result+=inputImage[(in_idx+out_startIdx)*channels+out_c_idx]*weights[kh*kernel_width+kw];
+
+    // Define clock-wise indices globally
+    const int clockWiseIndices[16][2] = {
+        {0, -3}, {1, -3}, {2, -2}, {3, -1},
+        {3, 0}, {3, 1}, {2, 2}, {1, 3},
+        {0, 3}, {-1, 3}, {-2, 2}, {-3, 1},
+        {-3, 0}, {-3, -1}, {-2, -2}, {-1, -3}
+    };
+
+    if(out_idx >= 0 && out_idx < out_width * out_height){
+        float centerValue = inputImage[(out_idx + out_startIdx) * channels + out_c_idx];
+        float orientation = 0.0; // Initialize orientation
+        float orient_x = 0.0;
+        float orient_y = 0.0;
+        //float orient_sum = 0.0;
+        float threshold = 50; // Define threshold 't'
+        const uint contiguous_count = 8;
+
+        // Define kernel radius
+        int counterLesser = 0;
+        int counterGreater = 0;
+
+        // Iterate in a clockwise pattern around the center pixel, going 4 past the initial position
+        for(int i = 0; i < 16+contiguous_count; i++){
+            int offsetX = clockWiseIndices[int(i & 15)][0];
+            int offsetY = clockWiseIndices[int(i & 15)][1];
+            int in_idx = optimized_index(optim_xy + ivec4(0, 0, offsetX, offsetY), out_width, out_height);
+            if(in_idx < 0 || in_idx >= out_width * out_height) continue; // Out of bounds check
+
+            float neighborValue = inputImage[(in_idx + out_startIdx) * channels + out_c_idx];
+
+            // Check if the neighbor value is greater than or less than the center value by threshold t
+            if(neighborValue > centerValue + threshold){
+                if (counterLesser>contiguous_count){
+                    break;
+                }else {
+                    if(counterLesser>0){
+                        orient_x=0;
+                        orient_y=0;
+                        counterLesser = 0;
+                    }
+                }
+                counterGreater++;
+                orient_x += clockWiseIndices[int(i&15)][0]*(neighborValue-centerValue);
+                orient_y += clockWiseIndices[int(i&15)][1]*(neighborValue-centerValue);
+            }
+            else if(neighborValue < centerValue - threshold){
+                if (counterGreater>contiguous_count){
+                    break;
+                }else {
+                    if(counterGreater>0){
+                        orient_x=0;
+                        orient_y=0;
+                        counterGreater = 0;
+                    }
+                }
+                counterLesser++;
+                orient_x += clockWiseIndices[int((i + 8) &15)][0]*(centerValue-neighborValue);
+                orient_y += clockWiseIndices[int((i + 8) &15)][1]*(centerValue-neighborValue);
+            }
+            else{
+                if (counterLesser>contiguous_count){
+                    break;
+                }else {
+                    if(counterLesser>0){
+                        orient_x=0;
+                        orient_y=0;
+                        counterLesser = 0;
+                    }
+                }
+                if (counterGreater>contiguous_count){
+                    break;
+                }else {
+                    if(counterGreater>0){
+                        orient_x=0;
+                        orient_y=0;
+                        counterGreater = 0;
+                    }
                 }
             }
-            //padding is zero
+
+            // Check if there are 5 contiguous values
         }
 
-        out_idx = int((out_idx+out_startIdx)*channels+out_c_idx);
-        outputImage[out_idx] = result;
-
+        if(counterGreater >= contiguous_count || counterLesser >= contiguous_count){
+            int counter = max(counterGreater, counterLesser);
+            //int div = counter;
+            orientation = atan(orient_x/counter, orient_y/counter);
+            outputImage[(out_idx + out_startIdx) * channels + out_c_idx] = .5+ orientation/(4*3.14159);
+        }
+        else{
+            outputImage[(out_idx + out_startIdx) * channels + out_c_idx] = -1.0; // special value for csr culling
+        }
     }
 }

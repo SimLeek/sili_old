@@ -1,0 +1,22 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(constant_id = 0) const int WIDTH = 512;
+layout(constant_id = 1) const int HEIGHT = 512;
+layout(constant_id = 2) const int CHANNELS = 3;
+
+layout(set = 0, binding = 0) buffer SSBO {
+    float data[WIDTH][HEIGHT][CHANNELS];
+};
+
+void main() {
+    // Calculate global indices
+    uint globalIdxX = gl_GlobalInvocationID.x;
+    uint globalIdxY = gl_GlobalInvocationID.y;
+
+    // Access the SSBO data using global indices
+    float value = data[globalIdxX][globalIdxY][0]; // accessing the first channel
+
+    // Modify data or perform computations as needed
+}

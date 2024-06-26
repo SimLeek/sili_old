@@ -19,15 +19,15 @@ layout(std430, binding = 1) buffer PyramidData {
     PyramidLevel pyramidLevels[];
 };
 
-layout(std430, binding = 2) buffer SelBuffer {
-    uint ioSelection[];
+layout(std430, binding = 2) buffer OutputBuffer {
+    uint outputSelection[];
 };
 
-layout(std430, binding = 3) buffer vertConvBuffer {
-    float horizWeights[];
-};
+/*layout(std430, binding = 3) buffer vertConvBuffer {
+    float vertWeights[];
+};*/
 
-layout(constant_id = 1) const uint kernel_width = 0;
+layout(constant_id = 1) const uint kernel_height = 0;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -51,37 +51,46 @@ void main() {
         out_width = pyramidLevels[out_level].width;
         out_height = pyramidLevels[out_level].height;
     }
-    uint out_y_idx = ((idx-out_startIdx)/channels)%out_height;
-    uint out_x_idx = ((idx-out_startIdx)/channels)/out_height;
+    uint out_x_idx = ((idx-out_startIdx)/channels)%out_width;
+    uint out_y_idx = ((idx-out_startIdx)/channels)/out_width;
     uint out_c_idx = idx%channels;
 
-    float max_val = -9999; // todo: replace with -inf equivalent
+    float max_val = 0.0; // padding is zero
     uint max_idx = -1;
-    for(int k=0; k< kernel_width; k++){
-        int w_diff = k-int(kernel_width /2);
+    bool valid = 0;
+    if(kernel_height>out_width){
+        valid=1; // keep top
+    }
+    for(int k=0; k<kernel_height; k++){
+        int h_diff = k-int(kernel_height/2);
 
-        int in_x_idx = int(out_y_idx)+ w_diff;
-        uint in_y_idx = out_x_idx;
+        uint in_x_idx = out_y_idx;
+        int in_y_idx = int(out_x_idx)+h_diff;
         uint in_c_idx = out_c_idx;
 
-        if(in_x_idx>=0 && in_x_idx<out_height){
+        if(in_y_idx>=0 && in_y_idx<out_width){
             uint in_idx = out_startIdx+(in_y_idx*out_height+in_x_idx)*channels + in_c_idx;
-            uint true_in_idx = ioSelection[in_idx];
-            float val = inputImage[true_in_idx]* horizWeights[k];
+            float val = inputImage[in_idx];//*vertWeights[k];
+            if(val!=max_val && max_val!=0.0){ // assure not all same. If so, then output 0.
+                valid=1;
+            }
             if(val>max_val){
                 max_val = val;
-                max_idx = true_in_idx;
+                max_idx = in_idx;
             }
         }
-        //padding is zero
     }
 
     uint out_idx = out_startIdx+out_x_idx*out_height*channels + out_y_idx*channels + out_c_idx;
-    ioSelection[out_idx] = max_idx;
+    if (valid){
+        outputSelection[out_idx] = max_idx;
+    } else{
+        outputSelection[out_idx] = -1;
+    }
 
     // should show RGB bands in either vertical or horizontal
     /*uint wid = gl_WorkGroupID.x;
     if (out_idx%3==wid%3){
-        inputImage[out_idx] = min(outputImage[out_idx]+result, 1.0);
+        outputImage[out_idx] = min(outputImage[out_idx]+result, 1.0);
     }*/
 }

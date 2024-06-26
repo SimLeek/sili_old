@@ -40,7 +40,7 @@ def prime_factors(n):
         if n > 2:  # n is prime
             factors.append(n)
     else:
-        raise NotImplementedError("What kind of GPU are you using where this is necessary?")
+        raise NotImplementedError("If this large of a number is actually necessary, please add an issue.")
 
     return factors
 
@@ -134,4 +134,4 @@ def find_good_dimension_sizes(max_workgroup_size, dimensions):
 
 
 if __name__ == "__main__":
-    print(find_good_dimension_sizes(16536, 3))
+    print(find_good_dimension_sizes(1024, 3))
