@@ -1,0 +1,95 @@
+#version 450
+
+// Binary search function to find the index of the first element in array that is less than key
+int binarySearchLtIndex(uint arr[], int low, int high, uint key) {
+    while (low <= high) {
+        int mid = low + (high - low) / 2;
+        if (arr[mid] < key) {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    return high;  // Returns the index of the last element less than key
+}
+
+// Binary search function to find the index of the SparseValue in values_B that matches the column index
+int binarySearchCheckSparseValueIndex(SparseValue arr[], int low, int high, uint key) {
+    while (low <= high) {
+        int mid = low + (high - low) / 2;
+        if (arr[mid].index == key) {
+            return mid;
+        } else if (arr[mid].index < key) {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    return -1;  // Indicates no matching SparseValue found
+}
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer A_pointers {
+    uint nrows_A;
+    uint row_start_indices_A[];
+};
+
+struct SparseValue {
+    uint index;
+    float value;
+};
+
+layout(std430, binding = 1) buffer A_values {
+    uint nnz_A;
+    SparseValue values_A[];
+};
+
+layout(std430, binding = 2) buffer B_pointers {
+    uint nrows_B;
+    uint row_start_indices_B[];
+};
+
+layout(std430, binding = 3) buffer B_values {
+    uint nnz_B;
+    SparseValue values_B[];
+};
+
+layout(std430, binding = 4) buffer C_pointers {
+    uint nrows_C;
+    uint row_start_indices_C[];
+};
+
+layout(std430, binding = 5) buffer C_values {
+    uint nnz_C;
+    SparseValue values_C[];
+};
+
+shared float partial_sums[256];
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+
+    SparseValue a_val = values_A[gid];
+    uint a_col_index = a_val.index;
+    float a_value = a_val.value;
+
+    // Binary search to find the row in A that is less than gid
+    int a_row_index = int(binarySearchLtIndex(row_start_indices_A, 0, int(nrows_A) - 1, gid));
+
+    // a_row_index MUST be in A, so we proceed directly
+    uint b_row_start_index = row_start_indices_B[a_row_index];
+    uint b_row_end_index = row_start_indices_B[a_row_index + 1];
+
+    // Binary search to find the item in B row that matches the column in A
+    int b_nnz_index = int(binarySearchCheckSparseValueIndex(values_B, int(b_row_start_index), int(b_row_end_index) - 1, a_col_index));
+
+    // If b_nnz_index >= 0, multiply a_ij by b_ij and store in C
+    if (b_nnz_index >= 0) {
+        float b_value = values_B[b_nnz_index].value;
+        float c_value = a_value * b_value;
+
+        values_C[gid].index = a_col_index;
+        values_C[gid].value = c_value;
+    }
+}

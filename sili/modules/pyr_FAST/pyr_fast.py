@@ -324,8 +324,8 @@ if __name__ == '__main__':
     from sili.modules.image_pyramid.image_pyramid import ToImagePyramid
     gpu = GPUManager()
     #r = read_updates(0)
-    name = 0
-    #name = '/home/simleek/Pictures/21-08-51-927_512.gif'
+    #name = 0
+    name = '/home/simleek/Pictures/21-08-51-927_512.gif'
     r = read_updates(name, size=(1280,720))
     display = DirectDisplay()
     first = True

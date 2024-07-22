@@ -1,0 +1,28 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer A2RowIndices { uint A2_row_indices[]; };
+layout(std430, binding = 1) buffer A2ColIndices { uint A2_col_indices[]; };
+layout(std430, binding = 2) buffer A2Elements { float A2_elements[]; }; // Change float to appropriate type
+layout(std430, binding = 3) buffer NewRowBuffer { uint new_row_buffer[]; };
+
+uniform uint A2_size1;
+
+void main() {
+    for (uint i = gl_GlobalInvocationID.x; i < A2_size1; i += gl_GlobalInvocationID.x) {
+        uint index_start = new_row_buffer[i];
+        uint index_stop = new_row_buffer[i + 1];
+
+        A2_row_indices[i] = index_start;
+
+        for (uint j = index_start; j < index_stop; ++j) {
+            A2_col_indices[j] = j;
+            A2_elements[j] = 1.0; // Change 1.0 to appropriate constant value
+        }
+    }
+
+    if (gl_GlobalInvocationID.x == 0) {
+        A2_row_indices[A2_size1] = new_row_buffer[A2_size1];
+    }
+}

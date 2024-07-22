@@ -1,0 +1,107 @@
+#version 450
+
+layout(local_size_x = 32) in;
+
+layout(std430, binding = 0) buffer ARowIndices { uint A_row_indices[]; };
+layout(std430, binding = 1) buffer AColIndices { uint A_col_indices[]; };
+layout(std430, binding = 2) buffer BRowIndices { uint B_row_indices[]; };
+layout(std430, binding = 3) buffer BColIndices { uint B_col_indices[]; };
+layout(std430, binding = 4) buffer CRowIndices { uint C_row_indices[]; };
+layout(std430, binding = 5) buffer MColIndices { uint M_col_indices[]; };
+layout(std430, binding = 6) buffer MRowIndices { uint M_row_indices[]; };
+
+uniform uint A_size1;
+uniform uint B_size2;
+// mask size must be equal to A_size1 by B_size2
+
+int binarySearchLtIndex(uint arr[], int low, int high, uint key) {
+    while (low <= high) {
+        int mid = low + (high - low) / 2;
+        if (arr[mid] < key) {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    return high;  // Returns the index of the last element less than key
+}
+
+int binarySearchCheckSparseValueIndex(SparseValue arr[], int low, int high, uint key) {
+    while (low <= high) {
+        int mid = low + (high - low) / 2;
+        if (arr[mid].index == key) {
+            return mid;
+        } else if (arr[mid].index < key) {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    return -1;  // Indicates no matching SparseValue found
+}
+
+shared uint shared_front[32];
+
+void main() {
+    uint work_per_group = max((A_size1 - 1) / gl_NumWorkGroups.x + 1, 1);
+    uint row_C_start = gl_WorkGroupID.x * work_per_group;
+    uint row_C_stop = min((gl_WorkGroupID.x + 1) * work_per_group, A_size1);
+
+    for (uint row_C = row_C_start; row_C < row_C_stop; ++row_C) {
+        uint row_A_start = A_row_indices[row_C];
+        uint row_A_end = A_row_indices[row_C + 1];
+
+        uint row_M_start = M_row_indices[row_C];
+        uint row_M_end = M_row_indices[row_C+1];
+        if(row_M_start-row_M_end==0){
+            continue;  // no output allowed for this row.
+        }
+
+        uint my_row_B = row_A_start + gl_LocalInvocationID.x;
+        uint row_B_index = (my_row_B < row_A_end) ? A_col_indices[my_row_B] : 0;
+        uint row_B_start = (my_row_B < row_A_end) ? B_row_indices[row_B_index] : 0;
+        uint row_B_end = (my_row_B < row_A_end) ? B_row_indices[row_B_index + 1] : 0;
+
+        uint num_nnz = 0;
+        if (row_A_end - row_A_start > 0) {
+            uint current_front_index = (row_B_start < row_B_end) ? B_col_indices[row_B_start] : B_size2;
+
+            int mask_loc = -1;
+            while (true) {
+                barrier();
+                shared_front[gl_LocalInvocationID.x] = current_front_index;
+                barrier();
+
+                // todo: update this for workgroup size of 1024 or max_size instead of 32
+                if (gl_LocalInvocationID.x < 16) shared_front[gl_LocalInvocationID.x] = min(shared_front[gl_LocalInvocationID.x], shared_front[gl_LocalInvocationID.x + 16]);
+                barrier();
+                if (gl_LocalInvocationID.x < 8) shared_front[gl_LocalInvocationID.x] = min(shared_front[gl_LocalInvocationID.x], shared_front[gl_LocalInvocationID.x + 8]);
+                barrier();
+                if (gl_LocalInvocationID.x < 4) shared_front[gl_LocalInvocationID.x] = min(shared_front[gl_LocalInvocationID.x], shared_front[gl_LocalInvocationID.x + 4]);
+                barrier();
+                if (gl_LocalInvocationID.x < 2) shared_front[gl_LocalInvocationID.x] = min(shared_front[gl_LocalInvocationID.x], shared_front[gl_LocalInvocationID.x + 2]);
+                barrier();
+                if (gl_LocalInvocationID.x < 1) shared_front[gl_LocalInvocationID.x] = min(shared_front[gl_LocalInvocationID.x], shared_front[gl_LocalInvocationID.x + 1]);
+                barrier();
+
+                if (shared_front[0] == B_size2) break;
+
+                if (current_front_index == shared_front[0]) {
+                    ++row_B_start;
+                    current_front_index = (row_B_start < row_B_end) ? B_col_indices[row_B_start] : B_size2;
+                }
+
+                mask_loc = binarySearchCheckSparseValueIndex(M_col_indices, row_M_start, row_M_end, shared_front[0]);
+                if(mask_loc>=0){
+                    ++num_nnz;
+                    // increase front/col for mask too. Since it uses shared_front[0], should be same for all:
+                    row_M_start = mask_loc;
+                }
+            }
+        }
+
+        if (gl_LocalInvocationID.x == 0) {
+            C_row_indices[row_C] = num_nnz;
+        }
+    }
+}

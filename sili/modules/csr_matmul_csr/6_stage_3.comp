@@ -1,0 +1,107 @@
+#version 450
+
+layout(local_size_x = 32) in;
+
+layout(std430, binding = 0) buffer ARowIndices { uint A_row_indices[]; };
+layout(std430, binding = 1) buffer AColIndices { uint A_col_indices[]; };
+layout(std430, binding = 2) buffer AElements { float A_elements[]; }; // Change float to appropriate type
+layout(std430, binding = 3) buffer BRowIndices { uint B_row_indices[]; };
+layout(std430, binding = 4) buffer BColIndices { uint B_col_indices[]; };
+layout(std430, binding = 5) buffer BElements { float B_elements[]; }; // Change float to appropriate type
+layout(std430, binding = 6) buffer CRowIndices { uint C_row_indices[]; };
+layout(std430, binding = 7) buffer CColIndices { uint C_col_indices[]; };
+layout(std430, binding = 8) buffer CElements { float C_elements[]; }; // Change float to appropriate type
+
+uniform uint A_size1;
+uniform uint B_size2;
+
+shared uint shared_front[32];
+shared float shared_front_values[32]; // Change float to appropriate type
+
+void main() {
+    uint work_per_group = max((A_size1 - 1) / gl_NumWorkGroups.x + 1, 1);
+    uint row_C_start = gl_WorkGroupID.x * work_per_group;
+    uint row_C_stop = min((gl_WorkGroupID.x + 1) * work_per_group, A_size1);
+    uint local_id = gl_LocalInvocationID.x;
+
+    for (uint row_C = row_C_start; row_C < row_C_stop; ++row_C) {
+        uint row_A_start = A_row_indices[row_C];
+        uint row_A_end = A_row_indices[row_C + 1];
+
+        uint my_row_B = row_A_start + ((row_A_end - row_A_start > 1) ? local_id : 0);
+        uint row_B_index = (my_row_B < row_A_end) ? A_col_indices[my_row_B] : 0;
+        uint row_B_start = (my_row_B < row_A_end) ? B_row_indices[row_B_index] : 0;
+        uint row_B_end = (my_row_B < row_A_end) ? B_row_indices[row_B_index + 1] : 0;
+
+        float val_A = (my_row_B < row_A_end) ? A_elements[my_row_B] : 0.0;
+        uint index_in_C = C_row_indices[row_C] + local_id;
+
+        if (row_A_end - row_A_start > 1) {
+            uint current_front_index = (row_B_start < row_B_end) ? B_col_indices[row_B_start] : B_size2;
+            float current_front_value = (row_B_start < row_B_end) ? B_elements[row_B_start] : 0.0;
+
+            uint index_buffer = 0;
+            float value_buffer = 0.0;
+            uint buffer_size = 0;
+
+            while (true) {
+                barrier();
+                shared_front[local_id] = current_front_index;
+                barrier();
+                if (local_id < 16) shared_front[local_id] = min(shared_front[local_id], shared_front[local_id + 16]);
+                barrier();
+                if (local_id < 8) shared_front[local_id] = min(shared_front[local_id], shared_front[local_id + 8]);
+                barrier();
+                if (local_id < 4) shared_front[local_id] = min(shared_front[local_id], shared_front[local_id + 4]);
+                barrier();
+                if (local_id < 2) shared_front[local_id] = min(shared_front[local_id], shared_front[local_id + 2]);
+                barrier();
+                if (local_id < 1) shared_front[local_id] = min(shared_front[local_id], shared_front[local_id + 1]);
+                barrier();
+
+                if (shared_front[0] == B_size2) break;
+
+                shared_front_values[local_id] = (current_front_index == shared_front[0]) ? val_A * current_front_value : 0.0;
+                barrier();
+                if (local_id < 16) shared_front_values[local_id] += shared_front_values[local_id + 16];
+                barrier();
+                if (local_id < 8) shared_front_values[local_id] += shared_front_values[local_id + 8];
+                barrier();
+                if (local_id < 4) shared_front_values[local_id] += shared_front_values[local_id + 4];
+                barrier();
+                if (local_id < 2) shared_front_values[local_id] += shared_front_values[local_id + 2];
+                barrier();
+                if (local_id < 1) shared_front_values[local_id] += shared_front_values[local_id + 1];
+                barrier();
+
+                if (current_front_index == shared_front[0]) {
+                    ++row_B_start;
+                    current_front_index = (row_B_start < row_B_end) ? B_col_indices[row_B_start] : B_size2;
+                    current_front_value = (row_B_start < row_B_end) ? B_elements[row_B_start] : 0.0;
+                }
+
+                index_buffer = (local_id == buffer_size) ? shared_front[0] : index_buffer;
+                value_buffer = (local_id == buffer_size) ? shared_front_values[0] : value_buffer;
+                ++buffer_size;
+
+                if (buffer_size == gl_WorkGroupSize.x) {
+                    C_col_indices[index_in_C] = index_buffer;
+                    C_elements[index_in_C] = value_buffer;
+                }
+                index_in_C += (buffer_size == gl_WorkGroupSize.x) ? gl_WorkGroupSize.x : 0;
+                buffer_size = (buffer_size == gl_WorkGroupSize.x) ? 0 : buffer_size;
+            }
+
+            if (local_id < buffer_size) {
+                C_col_indices[index_in_C] = index_buffer;
+                C_elements[index_in_C] = value_buffer;
+            }
+        } else {
+            for (uint i = row_B_start + local_id; i < row_B_end; i += gl_WorkGroupSize.x) {
+                C_col_indices[index_in_C] = B_col_indices[i];
+                C_elements[index_in_C] = val_A * B_elements[i];
+                index_in_C += gl_WorkGroupSize.x;
+            }
+        }
+    }
+}

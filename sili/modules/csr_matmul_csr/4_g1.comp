@@ -1,0 +1,36 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer G1RowIndices { uint G1_row_indices[]; };
+layout(std430, binding = 1) buffer G1ColIndices { uint G1_col_indices[]; };
+layout(std430, binding = 2) buffer G1Elements { float G1_elements[]; }; // Change float to appropriate type
+layout(std430, binding = 3) buffer ARowIndices { uint A_row_indices[]; };
+layout(std430, binding = 4) buffer AColIndices { uint A_col_indices[]; };
+layout(std430, binding = 5) buffer AElements { float A_elements[]; }; // Change float to appropriate type
+layout(std430, binding = 6) buffer NewRowBuffer { uint new_row_buffer[]; };
+
+uniform uint A_size1;
+uniform uint A_nnz;
+uniform uint max_per_row;
+
+void main() {
+    for (uint i = gl_GlobalInvocationID.x; i < A_nnz; i += gl_GlobalInvocationID.x) {
+        G1_col_indices[i] = A_col_indices[i];
+        G1_elements[i] = A_elements[i];
+    }
+
+    for (uint i = gl_GlobalInvocationID.x; i < A_size1; i += gl_GlobalInvocationID.x) {
+        uint old_start = A_row_indices[i];
+        uint new_start = new_row_buffer[i];
+        uint row_chunks = new_row_buffer[i + 1] - new_start;
+
+        for (uint j = 0; j < row_chunks; ++j) {
+            G1_row_indices[new_start + j] = old_start + j * max_per_row;
+        }
+    }
+
+    if (gl_GlobalInvocationID.x == 0) {
+        G1_row_indices[G1_size1] = A_row_indices[A_size1];
+    }
+}

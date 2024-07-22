@@ -1,0 +1,38 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer ARowIndices { uint A_row_indices[]; };
+layout(std430, binding = 1) buffer AColumnIndices { uint A_column_indices[]; };
+layout(std430, binding = 2) buffer GroupNNZArray { uint group_nnz_array[]; };
+
+uniform uint A_size1;
+
+shared uint shared_nnz[256];
+
+void main() {
+    uint work_per_item = max((A_size1 - 1) / gl_NumWorkGroups.x + 1, 1);
+    uint row_start = gl_GlobalInvocationID.x * work_per_item;
+    uint row_stop = min((gl_GlobalInvocationID.x + 1) * work_per_item, A_size1);
+
+    uint max_A_nnz = 0;
+    for (uint row = row_start; row < row_stop; ++row) {
+        max_A_nnz = max(max_A_nnz, A_row_indices[row + 1] - A_row_indices[row]);
+    }
+
+    // load and sum to shared buffer
+    shared_nnz[gl_LocalInvocationID.x] = max_A_nnz;
+    barrier();
+
+    // reduction to obtain final result
+    for (uint stride = gl_WorkGroupSize.x / 2; stride > 0; stride /= 2) {
+        if (gl_LocalInvocationID.x < stride) {
+            shared_nnz[gl_LocalInvocationID.x] = max(shared_nnz[gl_LocalInvocationID.x], shared_nnz[gl_LocalInvocationID.x + stride]);
+        }
+        barrier();
+    }
+
+    if (gl_LocalInvocationID.x == 0) {
+        group_nnz_array[gl_WorkGroupID.x] = shared_nnz[0];
+    }
+}

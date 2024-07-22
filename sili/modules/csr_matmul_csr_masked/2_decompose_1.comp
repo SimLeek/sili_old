@@ -1,0 +1,16 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0) buffer ARowIndices { uint A_row_indices[]; };
+layout(std430, binding = 1) buffer ChunksPerRow { uint chunks_per_row[]; };
+
+uniform uint A_size1;
+uniform uint max_per_row;
+
+void main() {
+    for (uint row = gl_GlobalInvocationID.x; row < A_size1; row += gl_GlobalInvocationID.x) {
+        uint num_entries = A_row_indices[row + 1] - A_row_indices[row];
+        chunks_per_row[row] = (num_entries < max_per_row) ? 1 : ((num_entries - 1) / max_per_row + 1);
+    }
+}
